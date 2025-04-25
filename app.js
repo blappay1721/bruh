@@ -9,7 +9,6 @@ import {
   verifyKeyMiddleware,
 } from 'discord-interactions';
 import { getRandomEmoji, DiscordRequest } from './utils.js';
-import { getShuffledOptions, getResult } from './game.js';
 
 // Create an express app
 const app = express();
@@ -129,6 +128,10 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 
   console.error('unknown interaction type', type);
   return res.status(400).json({ error: 'unknown interaction type' });
+});
+
+app.get('/', (req, res) => {
+  res.send('Bruhcord is alive!');
 });
 
 app.listen(PORT, () => {
