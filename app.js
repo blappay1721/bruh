@@ -18,6 +18,8 @@ const PORT = process.env.PORT || 3000;
 // To keep track of our active games
 const activeGames = {};
 
+const spammingUsers = new Map();
+
 /**
  * Interactions endpoint URL where Discord will send HTTP requests
  * Parse request body and verifies incoming requests using discord-interactions package
@@ -46,8 +48,77 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       return res.send({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: {
-          // Fetches a random emoji to send from a helper function
-          content: `hello world ${getRandomEmoji()}`,
+          content: `m`,
+        },
+      });
+    }
+
+    // ------------------------------
+    // /pingbomb Command
+    // ------------------------------
+    if (name === 'pingbomb') {
+      const user = data.options.find(opt => opt.name === 'user').value;
+      const initiator = req.body.member.user.id;
+
+      if (spammingUsers.has(user) && spammingUsers.get(user).active) {
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: {
+            content: `<@${user}> is already being pingbombed by <@${spammingUsers.get(user).startedBy}>.`,
+            flags: InteractionResponseFlags.EPHEMERAL,
+          },
+        });
+      }
+
+      res.send({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          content: `Starting a pingbomb on <@${user}> initiated by <@${initiator}>...`,
+        },
+      });
+
+      spammingUsers.set(user, { active: true, startedBy: initiator });
+
+      const spamLoop = (i = 1) => {
+        const state = spammingUsers.get(user);
+        if (!state || !state.active) return;
+
+        const delay = Math.floor(Math.random() * 10000); // 0–10 sec
+        setTimeout(() => {
+          DiscordRequest(`webhooks/${process.env.APP_ID}/${req.body.token}`, {
+            method: 'POST',
+            body: {
+              content: `<@${user}> ping ${i}`,
+            },
+          });
+          spamLoop(i + 1);
+        }, delay);
+      };
+
+      spamLoop();
+      return;
+    }
+
+    // ------------------------------
+    // /stopping Command
+    // ------------------------------
+    if (name === 'stopping') {
+      const initiator = req.body.member.user.id;
+      let stoppedAny = false;
+
+      for (const [targetUser, state] of spammingUsers.entries()) {
+        if (state.startedBy === initiator || req.body.member.permissions === 'ADMINISTRATOR') {
+          spammingUsers.set(targetUser, { ...state, active: false });
+          stoppedAny = true;
+        }
+      }
+
+      return res.send({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          content: stoppedAny
+            ? `Pingbombs initiated by you have been stopped.`
+            : `You have no active pingbombs to stop.`,
         },
       });
     }

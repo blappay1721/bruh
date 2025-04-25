@@ -20,30 +20,36 @@ function createCommandChoices() {
 // Simple test command
 const TEST_COMMAND = {
   name: 'test',
-  description: 'Basic command',
+  description: 'test command',
   type: 1,
   integration_types: [0, 1],
   contexts: [0, 1, 2],
 };
 
-// Command containing options
-const CHALLENGE_COMMAND = {
-  name: 'challenge',
-  description: 'Challenge to a match of rock paper scissors',
+const PINGBOMB_COMMAND = {
+  name: 'pingbomb',
+  description: 'Ping someone multiple times',
   options: [
     {
-      type: 3,
-      name: 'object',
-      description: 'Pick your object',
+      type: 6, // USER type
+      name: 'user',
+      description: 'User to ping',
       required: true,
-      choices: createCommandChoices(),
     },
   ],
   type: 1,
   integration_types: [0, 1],
-  contexts: [0, 2],
+  contexts: [0, 1, 2],
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, CHALLENGE_COMMAND];
+const STOPPING_COMMAND = {
+  name: 'stopping',
+  description: 'Stop pinging a user',
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND];
 
 InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);
