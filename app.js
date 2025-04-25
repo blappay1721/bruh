@@ -1,3 +1,4 @@
+import './client.js';
 import 'dotenv/config';
 import express from 'express';
 import {
