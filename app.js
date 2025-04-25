@@ -103,10 +103,14 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
     // ------------------------------
     if (name === 'stopping') {
       const initiator = req.body.member.user.id;
+      const perms = BigInt(req.body.member.permissions || 0);
+      const isAdmin = (perms & 0x00000008n) === 0x00000008n;
+
       let stoppedAny = false;
 
       for (const [targetUser, state] of spammingUsers.entries()) {
-        if (state.startedBy === initiator || req.body.member.permissions === 'ADMINISTRATOR') {
+        // Only stop your own spam unless you're an admin
+        if (isAdmin || state.startedBy === initiator) {
           spammingUsers.set(targetUser, { ...state, active: false });
           stoppedAny = true;
         }
@@ -116,7 +120,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: {
           content: stoppedAny
-            ? `Pingbombs initiated by you have been stopped.`
+            ? `Pingbombs ${isAdmin ? 'have' : 'you started have'} been stopped.`
             : `You have no active pingbombs to stop.`,
         },
       });
