@@ -58,6 +58,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
     if (name === 'pingbomb') {
       const user = data.options.find(opt => opt.name === 'user').value;
       const initiator = req.body.member.user.id;
+      const channelId = req.body.channel_id; // Cache the channel_id early
 
       if (spammingUsers.has(user) && spammingUsers.get(user).active) {
         return res.send({
@@ -83,13 +84,18 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         if (!state || !state.active) return;
 
         const delay = Math.floor(Math.random() * 10000); // 0–10 sec
-        setTimeout(() => {
-          DiscordRequest(`webhooks/${process.env.APP_ID}/${req.body.token}`, {
-            method: 'POST',
-            body: {
-              content: `<@${user}> ping ${i}`,
-            },
-          });
+
+        setTimeout(async () => {
+          try {
+            await DiscordRequest(`/channels/${channelId}/messages`, {
+              method: 'POST',
+              body: {
+                content: `<@${user}> ping ${i}`,
+              },
+            });
+          } catch (error) {
+            console.error(`Failed to send ping #${i}:`, error);
+          }
           spamLoop(i + 1);
         }, delay);
       };
@@ -106,13 +112,25 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       const perms = BigInt(req.body.member.permissions || 0);
       const isAdmin = (perms & 0x00000008n) === 0x00000008n;
 
+      const targetUserOption = data.options?.find(opt => opt.name === 'user')?.value;
       let stoppedAny = false;
 
-      for (const [targetUser, state] of spammingUsers.entries()) {
-        // Only stop your own spam unless you're an admin
-        if (isAdmin || state.startedBy === initiator) {
-          spammingUsers.set(targetUser, { ...state, active: false });
-          stoppedAny = true;
+      if (targetUserOption) {
+        // Stopping a specific user's pingbomb
+        const targetState = spammingUsers.get(targetUserOption);
+        if (targetState) {
+          if (targetState.startedBy === initiator || isAdmin) {
+            spammingUsers.set(targetUserOption, { ...targetState, active: false });
+            stoppedAny = true;
+          }
+        }
+      } else {
+        // No user specified: stop your own pingbombs (or all if admin)
+        for (const [targetUser, state] of spammingUsers.entries()) {
+          if (state.startedBy === initiator || isAdmin) {
+            spammingUsers.set(targetUser, { ...state, active: false });
+            stoppedAny = true;
+          }
         }
       }
 
@@ -120,8 +138,8 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: {
           content: stoppedAny
-            ? `Pingbombs ${isAdmin ? 'have' : 'you started have'} been stopped.`
-            : `You have no active pingbombs to stop.`,
+            ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (isAdmin ? 's have' : 's you started have')} been stopped.`
+            : `You have no permission to stop that pingbomb.`,
         },
       });
     }
