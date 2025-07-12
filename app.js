@@ -120,7 +120,11 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         // Stopping a specific user's pingbomb
         const targetState = spammingUsers.get(targetUserOption);
         if (targetState) {
-          if (targetState.startedBy === initiator || isAdmin) {
+          if (
+            targetState.startedBy === initiator || // you started it
+            initiator === targetUserOption ||      // you're being pingbombed
+            isAdmin                                // you're admin
+          ) {
             spammingUsers.set(targetUserOption, { ...targetState, active: false });
             stoppedAny = true;
           }
@@ -128,7 +132,11 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       } else {
         // No user specified: stop your own pingbombs (or all if admin)
         for (const [targetUser, state] of spammingUsers.entries()) {
-          if (state.startedBy === initiator || isAdmin) {
+          if (
+            state.startedBy === initiator ||     // you started it
+            initiator === targetUser ||          // you're the victim
+            isAdmin                              // you're admin
+          ) {
             spammingUsers.set(targetUser, { ...state, active: false });
             stoppedAny = true;
           }
@@ -139,11 +147,12 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: {
           content: stoppedAny
-            ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (isAdmin ? 's have' : 's you started have')} been stopped.`
+            ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (isAdmin ? 's have' : 's you started or are targeted by have')} been stopped.`
             : `You have no permission to stop that pingbomb.`,
         },
       });
     }
+
 
     console.error(`unknown command: ${name}`);
     return res.status(400).json({ error: 'unknown command' });
@@ -154,7 +163,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 });
 
 app.get('/', (req, res) => {
-  res.send('Bruhcord is alive!');
+  res.send('bruh is alive!');
 });
 
 app.listen(PORT, () => {

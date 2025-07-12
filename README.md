@@ -1,4 +1,4 @@
-# bruhcord Bot
+# bruh Bot
 m
 
 ## Fellow swww...
