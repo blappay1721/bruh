@@ -42,6 +42,22 @@ const STOPPING_COMMAND = {
   contexts: [0, 1, 2],
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND];
+const CHAT_COMMAND = {
+  name: 'chat',
+  description: 'Chat with bruh bot',
+  options: [
+    {
+      type: 3, // STRING
+      name: 'prompt',
+      description: 'Message to send to the bot',
+      required: true,
+    },
+  ],
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, CHAT_COMMAND];
 
 InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);

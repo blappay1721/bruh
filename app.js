@@ -10,6 +10,7 @@ import {
   verifyKeyMiddleware,
 } from 'discord-interactions';
 import { getRandomEmoji, DiscordRequest } from './utils.js';
+import { getAIResponse } from './utils/ai.js';
 
 // Create an express app
 const app = express();
@@ -51,6 +52,26 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           content: `m`,
         },
       });
+    }
+
+    // ------------------------------
+    // /chat Command
+    // ------------------------------
+    if (name === 'chat') {
+      const prompt = data.options?.find(opt => opt.name === 'prompt')?.value || '';
+      try {
+        const reply = await getAIResponse(prompt);
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: reply },
+        });
+      } catch (err) {
+        console.error('AI error:', err);
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: '⚠️ Failed to fetch response.' },
+        });
+      }
     }
 
     // ------------------------------

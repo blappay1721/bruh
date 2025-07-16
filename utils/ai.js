@@ -1,5 +1,3 @@
-import fetch from "node-fetch";
-
 export async function getAIResponse(prompt) {
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
