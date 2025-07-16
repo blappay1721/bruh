@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { capitalize, InstallGlobalCommands } from './utils.js';
+import { capitalize, InstallGuildCommands } from './utils.js';
 
 // Simple test command
 const TEST_COMMAND = {
@@ -60,7 +60,7 @@ const CHAT_COMMAND = {
 
 const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, CHAT_COMMAND];
 
-InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS)
+InstallGuildCommands(process.env.APP_ID, process.env.GUILD_ID, ALL_COMMANDS)
   .then(() => console.log("✅ Slash commands registered successfully"))
   .catch((err) => console.error("❌ Failed to register commands:", err));
 
