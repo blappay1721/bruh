@@ -60,4 +60,7 @@ const CHAT_COMMAND = {
 
 const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, CHAT_COMMAND];
 
-InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS);
+InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS)
+  .then(() => console.log("✅ Slash commands registered successfully"))
+  .catch((err) => console.error("❌ Failed to register commands:", err));
+
