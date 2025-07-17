@@ -14,11 +14,12 @@ import { getAIResponse } from './utils/ai.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const activeGames = {};
+const allowedChannelId = '1365222140877738014';
 const spammingUsers = new Map();
 
 app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async function (req, res) {
   const { id, type, data } = req.body;
+  const channelId = req.body.channel_id;
 
   if (type === InteractionType.PING) {
     return res.send({ type: InteractionResponseType.PONG });
@@ -27,6 +28,17 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name } = data;
 
+    // Enforce channel restriction
+    if (channelId !== allowedChannelId) {
+      return res.send({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          content: "❌ This command can only be used in the designated channel.",
+          flags: InteractionResponseFlags.EPHEMERAL,
+        },
+      });
+    }
+
     if (name === 'test') {
       return res.send({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
@@ -34,13 +46,9 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       });
     }
 
-    // ------------------------------
-    // /chat Command
-    // ------------------------------
     if (name === 'chat') {
       const prompt = data.options?.find(opt => opt.name === 'prompt')?.value || '';
 
-      // Acknowledge command to avoid timeout
       res.send({
         type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
       });
@@ -49,7 +57,6 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         const reply = await getAIResponse(prompt);
         const chunks = reply.match(/[\s\S]{1,2000}/g) || ['(empty response)'];
 
-        // First chunk edits original deferred message and includes prompt
         await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
           method: 'PATCH',
           body: {
@@ -57,7 +64,6 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           },
         });
 
-        // Remaining chunks are sent as follow-ups
         for (let i = 1; i < chunks.length; i++) {
           await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}`, {
             method: 'POST',
@@ -75,13 +81,9 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       return;
     }
 
-    // ------------------------------
-    // /pingbomb Command
-    // ------------------------------
     if (name === 'pingbomb') {
       const user = data.options.find(opt => opt.name === 'user').value;
       const initiator = req.body.member.user.id;
-      const channelId = req.body.channel_id;
 
       if (spammingUsers.has(user) && spammingUsers.get(user).active) {
         return res.send({
@@ -107,7 +109,6 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         if (!state || !state.active) return;
 
         const delay = Math.floor(Math.random() * 10000);
-
         setTimeout(async () => {
           try {
             await DiscordRequest(`/channels/${channelId}/messages`, {
@@ -125,14 +126,10 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       return;
     }
 
-    // ------------------------------
-    // /stopping Command
-    // ------------------------------
     if (name === 'stopping') {
       const initiator = req.body.member.user.id;
       const perms = BigInt(req.body.member.permissions || 0);
       const isAdmin = (perms & 0x00000008n) === 0x00000008n;
-
       const targetUserOption = data.options?.find(opt => opt.name === 'user')?.value;
       let stoppedAny = false;
 
@@ -171,72 +168,64 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       });
     }
 
-    // ------------------------------
-    // /help Command
-    // ------------------------------
-	if (name === 'help') {
-	  const helpText = `
-	**bruh** is a multifunctional Discord bot built using Node.js, Express, and the Discord Interactions API.
+    if (name === 'help') {
+      const helpText = `
+**bruh** is a multifunctional Discord bot built using Node.js, Express, and the Discord Interactions API.
 
-	---
+---
 
-	## 🚀 Features
+## 🚀 Features
 
-	### \`/chat\`
-	Ask the bot any question, and get an AI-generated response using OpenRouter (free LLM API proxy).
-	- **Usage**: \`/chat prompt: <your message>\`
-	- **Response**: Replies using the DeepSeek Chat model.
-	- **Supports multi-part messages** if reply exceeds Discord’s 2000 character limit.
+### \`/chat\`
+Ask the bot any question, and get an AI-generated response using OpenRouter.
+- **Usage**: \`/chat prompt: <your message>\`
+- **Response**: DeepSeek Chat model.
+- **Splits long replies into chunks**
 
-	> ⚠️ Prompt only supports text currently
+---
 
-	---
+### \`/pingbomb\`
+Spam-pings a user randomly until stopped.
+- **Usage**: \`/pingbomb user: @target\`
+- **Delay**: Random 0–10s between pings.
 
-	### \`/pingbomb\`
-	Spam-pings a specified user randomly until stopped.
-	- **Usage**: \`/pingbomb user: @target\`
-	- **Behavior**: Sends pings every 0–10 seconds.
+---
 
-	---
+### \`/stopping\`
+Stop pingbombs.
+- **Usage**: \`/stopping\` or \`/stopping user: @target\`
+- **Permissions**: Admins can stop all. Users can stop their own or pingbombs they started. Targets can also stop their own.
 
-	### \`/stopping\`
-	Stops active pingbombs.
-	- **Usage**: \`/stopping\` or \`/stopping user: @target\`
-	- **Permissions**: Admins can stop any.
+---
 
-	---
+### \`/test\`
+Simple test command.
+      `;
 
-	### \`/test\`
-	Test command to check if the bot is responsive.
-	`;
+      const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
 
-	  // Discord response limit is 2000 characters
-	  const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
+      res.send({
+        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+      });
 
-	  res.send({
-		type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-	  });
+      try {
+        await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
+          method: 'PATCH',
+          body: { content: chunks[0] },
+        });
 
-	  try {
-		// Send main chunk first
-		await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
-		  method: 'PATCH',
-		  body: { content: chunks[0] },
-		});
+        for (let i = 1; i < chunks.length; i++) {
+          await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}`, {
+            method: 'POST',
+            body: { content: chunks[i] },
+          });
+        }
+      } catch (err) {
+        console.error('Help command failed:', err);
+      }
 
-		// Send any follow-up chunks
-		for (let i = 1; i < chunks.length; i++) {
-		  await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}`, {
-			method: 'POST',
-			body: { content: chunks[i] },
-		  });
-		}
-	  } catch (err) {
-		console.error('Help command failed:', err);
-	  }
-
-	  return;
-	}
+      return;
+    }
 
     console.error(`unknown command: ${name}`);
     return res.status(400).json({ error: 'unknown command' });
