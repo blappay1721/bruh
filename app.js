@@ -14,7 +14,7 @@ import { getAIResponse } from './utils/ai.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const allowedChannelId = '1365222140877738014';
+const allowedChannelId = process.env.ALLOWED_CHANNEL_ID;
 const spammingUsers = new Map();
 
 app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async function (req, res) {
