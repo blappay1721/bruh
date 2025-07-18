@@ -66,7 +66,15 @@ const HELP_COMMAND = {
   contexts: [0, 1, 2],
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, CHAT_COMMAND, HELP_COMMAND];
+const EVERYONE_COMMAND = {
+  name: 'everyone',
+  description: 'Open a vote window to mention @everyone if enough people agree',
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, CHAT_COMMAND, HELP_COMMAND, EVERYONE_COMMAND];
 
 InstallGuildCommands(process.env.APP_ID, process.env.GUILD_ID, ALL_COMMANDS)
   .then(() => console.log("✅ Slash commands registered successfully"))
