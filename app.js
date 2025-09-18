@@ -74,6 +74,17 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name } = data;
 
+    // Enforce channel restriction
+    if (channelId !== allowedChannelId) {
+      return res.send({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          content: "❌ This command can only be used in the designated channel.",
+          flags: InteractionResponseFlags.EPHEMERAL,
+        },
+      });
+    }
+
     if (name === 'test') {
       return res.send({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
