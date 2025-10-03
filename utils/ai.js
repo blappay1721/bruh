@@ -10,7 +10,7 @@ export async function getAIResponse(prompt) {
       "X-Title": "bruh",                    // ← A short name for your project
     },
     body: JSON.stringify({
-      model: "deepseek/deepseek-chat-v3-0324:free",
+      model: "deepseek/deepseek-chat-v3.1:free", // ← You can change this to another model if you want
       messages: [
         { role: "system", content: "You are a helpful Discord bot named bruh." },
         { role: "user", content: prompt },
