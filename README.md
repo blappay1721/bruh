@@ -15,7 +15,7 @@ Ask the bot any question, and get an AI-generated response.
 - **Response**: The bot will reply using DeepSeek V3.1 (671B) through the Ollama Cloud API.
 - **Supports multi-part messages** if reply exceeds Discord’s 2000 character limit.
 
-> ⚠️ Prompt only supports text currently
+> ⚠️ Prompt only supports text, Multi-Persona feature is a private feature
 
 ---
 
