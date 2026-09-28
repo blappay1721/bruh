@@ -63,7 +63,7 @@ Discord side:
 
 `.env`: `APP_ID`, `DISCORD_TOKEN`, `TOKEN`, `GUILD_ID`, `ALLOWED_CHANNEL_ID`, optional `PERSONA_API_URL`. `PUBLIC_KEY` and `OLLAMA_API_KEY` are no longer used.
 
-Keep the persona server running on the N150 with systemd, e.g. `/etc/systemd/system/bruh-persona.service`:
+Keep the persona server running with systemd, e.g. `/etc/systemd/system/bruh-persona.service`:
 ```ini
 [Unit]
 After=network.target ollama.service
