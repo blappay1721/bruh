@@ -1,20 +1,29 @@
 // How persona messages look: accent color per persona, real avatars, compact embeds.
 import { EmbedBuilder } from 'discord.js';
-import { askedFooter } from './ai.js';
 
 const PALETTE = [0x5865f2, 0xeb459e, 0x57f287, 0xfee75c, 0xed4245, 0x1abc9c, 0xe67e22, 0x9b59b6, 0x3498db, 0xf47b67];
 const NEUTRAL = 0x2b2d31;
+const PROMPT_MAX = 300; // longer prompts are shown cut off with "…"
 
 // stable color per persona, so everyone learns who's who at a glance
 export const personaColor = id => PALETTE[[...id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % PALETTE.length];
+const clip = (s, n) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
-// /chat reply: persona as the header, the reply as the body, who asked what in the footer
-export function replyEmbed({ persona, avatar, reply, invoker, invokerAvatar, prompt }) {
+// the persona's reply card (also used for replies in public chat channels)
+export function personaEmbed({ persona, avatar, reply }) {
   return new EmbedBuilder()
     .setColor(personaColor(persona.id))
     .setAuthor({ name: persona.name, ...(avatar && { iconURL: avatar }) })
-    .setDescription(reply)
-    .setFooter({ text: askedFooter(invoker, prompt), ...(invokerAvatar && { iconURL: invokerAvatar }) });
+    .setDescription(reply);
+}
+
+// /chat: the prompt card first (who asked + what), the persona's reply card under it
+export function chatEmbeds({ persona, avatar, reply, invoker, invokerAvatar, prompt }) {
+  const promptCard = new EmbedBuilder()
+    .setColor(NEUTRAL)
+    .setAuthor({ name: invoker, ...(invokerAvatar && { iconURL: invokerAvatar }) })
+    .setDescription(clip(prompt.trim(), PROMPT_MAX));
+  return [promptCard, personaEmbed({ persona, avatar, reply })];
 }
 
 // first message in a new chat channel
@@ -28,3 +37,6 @@ export function introEmbed({ persona, avatar, ownerId, isPrivate, timeoutMin }) 
 }
 
 export const noticeEmbed = (text, color = NEUTRAL) => new EmbedBuilder().setColor(color).setDescription(text);
+
+// is this bot embed a persona line (vs. an intro or a notice)? used to read chat history back
+export const isPersonaEmbed = e => Boolean(e?.author?.name && e.description && !e.author.name.startsWith('Chatting with'));

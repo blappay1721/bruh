@@ -1,6 +1,7 @@
 // Persona model client. Prompts are built by bruh-data/Scripts/Phase_7/persona_server.py exactly like the model's
 // training data (style card + retrieved style lines/facts + chat turns); this file gathers the chat and resolves names.
 import { DiscordRequest } from '../utils.js';
+import { isPersonaEmbed } from './look.js';
 
 const API = process.env.PERSONA_API_URL || 'http://127.0.0.1:8787';
 const HISTORY = 30; // messages sent as context; the server trims to the training window (8 turns, 45-min session)
@@ -29,15 +30,16 @@ export async function findPersona(value) {
 
 // ---------- model ----------
 // messages: [{ author: username, text, ts: ISO }] oldest first -> { reply, name, persona, debug }
-export async function askPersona(persona, messages) {
+// session: chat channel id -> the server keeps that chat's system prompt identical so Ollama reuses its cache
+export async function askPersona(persona, messages, session = undefined) {
   const res = await fetch(`${API}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ persona, messages }),
-    signal: AbortSignal.timeout(170_000), // CPU box; interaction tokens last 15 min
+    body: JSON.stringify({ persona, messages, session }),
+    signal: AbortSignal.timeout(170_000), // CPU box with a queue; interaction tokens last 15 min
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `persona server ${res.status}`);
+  if (!res.ok) throw new Error(res.status === 503 ? 'busy' : data.error || `persona server ${res.status}`);
   return data;
 }
 
@@ -47,10 +49,6 @@ export async function getPersonaReply(persona, prompt, { channelId, appId, invok
   messages.push({ author: invoker, text: prompt, ts: new Date().toISOString() });
   return askPersona(persona, messages);
 }
-
-// /chat embed footer — parsed back by restTurns in context mode
-export const askedFooter = (invoker, prompt) => `💬 ${invoker} asked: ${prompt.replace(/\s+/g, ' ').slice(0, 200)}`;
-const ASKED_RE = /^💬 (.+?) asked: (.*)$/s;
 
 // ---------- Discord message -> turn ----------
 // the training export wrote @username, :emoji:, [sticker] and attachment URLs, so normalize to that
@@ -62,7 +60,7 @@ function messageText({ content = '', mentions = [], stickers = 0, attachments = 
 }
 
 // chat channels (discord.js Messages, oldest first): people's messages + this chat's persona lines (sent by its webhook)
-export function discordTurns(messages, { webhookId, persona }) {
+export function discordTurns(messages, { webhookId, persona, botId }) {
   const self = new Set(persona.aliases.map(a => a.toLowerCase()));
   const turns = [];
   for (const m of messages) {
@@ -71,7 +69,10 @@ export function discordTurns(messages, { webhookId, persona }) {
       if (m.webhookId !== webhookId) continue;
       author = m.author.username; // the persona name the line was sent as (earlier personas stay themselves after /switch)
     } else if (m.author.bot) {
-      continue; // intros, notices, other bots
+      // public chats: the bot's own reply cards are persona lines; intros, notices and other bots are skipped
+      const e = m.embeds?.[0];
+      if (m.author.id === botId && isPersonaEmbed(e)) turns.push({ author: e.author.name, text: e.description, ts: m.createdAt.toISOString() });
+      continue;
     } else {
       // someone chatting with their own persona: "u_002 replying to u_002" confuses the model
       author = self.has(m.author.username.toLowerCase()) ? 'someone' : m.author.username;
@@ -90,10 +91,9 @@ function restTurns(messages, appId) {
   for (const m of messages) {
     if (m.author?.bot) {
       if (m.author.id !== appId) continue;
-      const e = m.embeds?.[0];
-      const asked = ASKED_RE.exec(e?.footer?.text || '');
-      if (e?.author?.name && e.description && asked) {
-        turns.push({ author: asked[1], text: asked[2], ts: m.timestamp }, { author: e.author.name, text: e.description, ts: m.timestamp });
+      const [ask, answer] = m.embeds || []; // /chat = prompt card + persona reply card
+      if (ask?.author?.name && ask.description && isPersonaEmbed(answer)) {
+        turns.push({ author: ask.author.name, text: ask.description, ts: m.timestamp }, { author: answer.author.name, text: answer.description, ts: m.timestamp });
       }
       continue;
     }

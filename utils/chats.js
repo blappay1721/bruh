@@ -2,11 +2,12 @@
 import { ChannelType, PermissionFlagsBits as P, WebhookClient } from 'discord.js';
 import { state, config, save, saveSoon } from './store.js';
 import { askPersona, discordTurns, findPersona, linkMentions, personaAvatar } from './ai.js';
-import { introEmbed, noticeEmbed, personaColor } from './look.js';
+import { introEmbed, noticeEmbed, personaColor, personaEmbed } from './look.js';
 
 const DEBOUNCE_MS = 2000; // answer a quick burst of messages once, not each fragment
 const LINE_GAP_MS = 700; // multi-line replies go out as separate messages, like a real burst
-const runtime = new Map(); // channelId -> { timer, busy, pending }
+const MAX_WAITING = 5; // public chats: people waiting for an answer at once (oldest dropped beyond this)
+const runtime = new Map(); // channelId -> { queue: Map(key -> message), timer, busy }
 
 export class UserError extends Error {} // message is safe to show the user
 
@@ -60,58 +61,87 @@ export async function createChat({ guild, ownerId, ownerName, persona, isPrivate
   return channel;
 }
 
-// every human message in a chat channel
+// every human message in a chat channel: queue it, answer after a short pause (a quick burst gets one answer)
 export function onMessage(message) {
   const chat = state.chats[message.channelId];
   if (!chat || message.author.bot || message.webhookId) return;
   chat.lastActivity = Date.now();
   chat.warned = false;
   saveSoon();
-  const rt = runtime.get(message.channelId) || {};
+  const rt = runtime.get(message.channelId) || { queue: new Map() };
   runtime.set(message.channelId, rt);
-  if (rt.busy) {
-    rt.pending = true; // answered right after the current reply
-    return;
-  }
+  // private: one reply per burst. public: one reply per person, to their latest message, in arrival order
+  const key = chat.private ? 'owner' : message.author.id;
+  rt.queue.delete(key); // re-insert = back of the line, so someone who keeps typing doesn't starve the others
+  rt.queue.set(key, message);
+  while (rt.queue.size > MAX_WAITING) rt.queue.delete(rt.queue.keys().next().value);
+  if (rt.busy) return; // the running drain picks it up
   clearTimeout(rt.timer);
-  rt.timer = setTimeout(() => respond(message.channel, rt), DEBOUNCE_MS);
+  rt.timer = setTimeout(() => drain(message.channel, rt), DEBOUNCE_MS);
 }
 
-async function respond(channel, rt) {
-  const chat = state.chats[channel.id];
-  if (!chat) return; // closed meanwhile
+async function drain(channel, rt) {
+  if (rt.busy) return;
   rt.busy = true;
-  rt.pending = false;
   channel.sendTyping().catch(() => {});
   const typing = setInterval(() => channel.sendTyping().catch(() => {}), 8000);
   try {
-    const persona = await findPersona(chat.persona);
-    if (!persona) throw new UserError('This persona no longer exists. Use `/switch` to pick another.');
-    const recent = [...(await channel.messages.fetch({ limit: 30 })).values()].reverse();
-    const turns = discordTurns(recent, { webhookId: chat.webhookId, persona });
-    if (!turns.length) return;
-    const { reply } = await askPersona(persona.id, turns);
-    if (!state.chats[channel.id]) return; // closed while generating
-    const hook = new WebhookClient({ id: chat.webhookId, token: chat.webhookToken });
-    const avatarURL = (await personaAvatar(chat.guildId, persona)) || undefined;
-    const lines = reply.split('\n').filter(Boolean);
-    for (const [i, line] of lines.entries()) {
-      const { content, users } = await linkMentions(line, chat.guildId);
-      await hook.send({ content, username: persona.name, avatarURL, allowedMentions: { parse: [], users } });
-      if (i < lines.length - 1) await sleep(LINE_GAP_MS);
-    }
-    chat.lastActivity = Date.now();
-    saveSoon();
-  } catch (err) {
-    console.error(`Chat ${channel.id} reply failed:`, err);
-    if (state.chats[channel.id]) {
-      const text = err instanceof UserError ? err.message : '⚠️ The persona model is unreachable right now. Try again in a bit.';
-      await channel.send({ embeds: [noticeEmbed(text)] }).catch(() => {});
+    while (rt.queue.size && state.chats[channel.id]) {
+      const [key, target] = rt.queue.entries().next().value;
+      rt.queue.delete(key);
+      await replyTo(channel, state.chats[channel.id], target);
     }
   } finally {
     clearInterval(typing);
     rt.busy = false;
-    if (rt.pending && state.chats[channel.id]) rt.timer = setTimeout(() => respond(channel, rt), DEBOUNCE_MS);
+  }
+}
+
+async function replyTo(channel, chat, target) {
+  try {
+    const persona = await findPersona(chat.persona);
+    if (!persona) throw new UserError('This persona no longer exists. Use `/switch` to pick another.');
+    // the conversation up to the message being answered (later messages get their own reply)
+    let recent = [...(await channel.messages.fetch({ limit: 30 })).values()].reverse()
+      .filter(m => m.createdTimestamp <= target.createdTimestamp);
+    // other people's still-unanswered messages get their own replies: leave them out so this one answers the target
+    const isPersonaLine = m => (m.webhookId ? m.webhookId === chat.webhookId : m.author.id === channel.client.user.id && m.embeds?.[0]?.author);
+    const lastAnswer = recent.findLastIndex(isPersonaLine);
+    recent = recent.filter((m, i) => i <= lastAnswer || isPersonaLine(m) || m.author.id === target.author.id);
+    const turns = discordTurns(recent, { webhookId: chat.webhookId, persona, botId: channel.client.user.id });
+    if (!turns.length) return;
+    const { reply } = await askPersona(persona.id, turns, channel.id);
+    if (!state.chats[channel.id]) return; // closed while generating
+    const avatar = (await personaAvatar(chat.guildId, persona)) || undefined;
+    if (chat.private) {
+      // one person: post as the persona themselves (name + avatar), a line per message like a real burst
+      const hook = new WebhookClient({ id: chat.webhookId, token: chat.webhookToken });
+      const lines = reply.split('\n').filter(Boolean);
+      for (const [i, line] of lines.entries()) {
+        const { content, users } = await linkMentions(line, chat.guildId);
+        await hook.send({ content, username: persona.name, avatarURL: avatar, allowedMentions: { parse: [], users } });
+        if (i < lines.length - 1) await sleep(LINE_GAP_MS);
+      }
+    } else {
+      // several people: a real reply to the message it answers (webhooks can't reply), without pinging them
+      const { content, users } = await linkMentions(reply, chat.guildId);
+      await target.reply({
+        ...(users.length && { content: users.map(id => `<@${id}>`).join(' ') }), // pings never fire inside embeds
+        embeds: [personaEmbed({ persona, avatar, reply: content })],
+        allowedMentions: { parse: [], users, repliedUser: false },
+        failIfNotExists: false, // they deleted their message meanwhile: post it normally
+      });
+    }
+    chat.lastActivity = Date.now();
+    saveSoon();
+  } catch (err) {
+    console.error(`Chat ${channel.id} reply failed:`, err.message);
+    if (state.chats[channel.id]) {
+      const text = err instanceof UserError ? err.message
+        : err.message === 'busy' ? '⏳ Lots of chats going right now. Send that again in a moment.'
+          : '⚠️ The persona model is unreachable right now. Try again in a bit.';
+      await channel.send({ embeds: [noticeEmbed(text)] }).catch(() => {});
+    }
   }
 }
 

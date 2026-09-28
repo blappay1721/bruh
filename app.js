@@ -3,7 +3,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, PermissionF
 import { client } from './client.js';
 import { DiscordRequest } from './utils.js';
 import { findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar } from './utils/ai.js';
-import { replyEmbed, noticeEmbed } from './utils/look.js';
+import { chatEmbeds, noticeEmbed } from './utils/look.js';
 import { config, save, CONFIG_SPEC } from './utils/store.js';
 import {
   UserError, canControl, chatOf, closeChat, createChat, forget, onMessage, openChatsOf, startSweeper, switchPersona,
@@ -115,12 +115,14 @@ async function onCommand(interaction) {
       await interaction.editReply({
         // pings only work in message text (never inside embeds), so named people are listed there
         content: users.length ? users.map(id => `<@${id}>`).join(' ') : '',
-        embeds: [replyEmbed({ persona, avatar, reply: content, invoker, invokerAvatar: interaction.user.displayAvatarURL(), prompt })],
+        embeds: chatEmbeds({ persona, avatar, reply: content, invoker, invokerAvatar: interaction.user.displayAvatarURL(), prompt }),
         allowedMentions: { parse: [], users },
       });
     } catch (err) {
-      console.error('Persona chat error:', err);
-      await interaction.editReply(err instanceof UserError ? `⚠️ ${err.message}` : '⚠️ The persona model is unreachable right now.');
+      console.error('Persona chat error:', err.message);
+      await interaction.editReply(err instanceof UserError ? `⚠️ ${err.message}`
+        : err.message === 'busy' ? '⏳ Lots of chats going right now. Try again in a moment.'
+          : '⚠️ The persona model is unreachable right now.');
     }
     return;
   }
