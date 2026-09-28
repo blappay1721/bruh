@@ -107,9 +107,12 @@ async function channelHistory(channelId) {
   }
 }
 
+// one-off by default: each /chat answers only its prompt. PERSONA_CONTEXT=1 also sends recent channel chat + earlier replies.
+const USE_CONTEXT = process.env.PERSONA_CONTEXT === '1';
+
 // -> { reply, name, persona, debug }
 export async function getPersonaReply(persona, prompt, { channelId, appId, invoker }) {
-  const messages = toTurns(await channelHistory(channelId), appId);
+  const messages = USE_CONTEXT ? toTurns(await channelHistory(channelId), appId) : [];
   messages.push({ author: invoker, text: prompt, ts: new Date().toISOString() });
   const res = await fetch(`${API}/chat`, {
     method: 'POST',
