@@ -1,6 +1,8 @@
 # bruh - A Discord Bot
 
-**bruh** is a multifunctional Discord bot built using Node.js, Express, and the Discord Interactions API. It includes interactive features like AI chatbot responses, utility commands, and fun spam commands.
+**bruh** is a multifunctional Discord bot built using Node.js and discord.js. It includes interactive features like AI chatbot responses, utility commands, and fun spam commands.
+
+Slash commands arrive over the bot's gateway connection, so it runs anywhere with outbound internet — no public URL, tunnel, or open ports. **Keep the Developer Portal's Interactions Endpoint URL empty** (if it's set, Discord sends commands there instead of to the bot).
 
 ---
 
@@ -37,7 +39,7 @@ Discord side:
 - The bot needs **Read Message History** in the allowed channel.
 - Re-register commands after updating: `npm run register` (adds the `persona` option).
 
-`.env`: `APP_ID`, `PUBLIC_KEY`, `DISCORD_TOKEN`, `TOKEN`, `GUILD_ID`, `ALLOWED_CHANNEL_ID`, optional `PERSONA_API_URL`. `OLLAMA_API_KEY` is no longer used.
+`.env`: `APP_ID`, `DISCORD_TOKEN`, `TOKEN`, `GUILD_ID`, `ALLOWED_CHANNEL_ID`, optional `PERSONA_API_URL`. `PUBLIC_KEY` and `OLLAMA_API_KEY` are no longer used.
 
 Keep the persona server running on the N150 with systemd, e.g. `/etc/systemd/system/bruh-persona.service`:
 ```ini

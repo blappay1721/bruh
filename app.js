@@ -1,217 +1,175 @@
-import './client.js';
 import 'dotenv/config';
-import express from 'express';
-import {
-  ButtonStyleTypes,
-  InteractionResponseFlags,
-  InteractionResponseType,
-  InteractionType,
-  MessageComponentTypes,
-  verifyKeyMiddleware,
-} from 'discord-interactions';
-import { getRandomEmoji, DiscordRequest } from './utils.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import { client } from './client.js';
+import { DiscordRequest } from './utils.js';
 import { getPersonas, getPersonaReply, formatReply, linkMentions } from './utils/ai.js';
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+// Interactions arrive over the gateway (client.js), not HTTP: no Express server, no public URL, no PUBLIC_KEY.
 const allowedChannelId = process.env.ALLOWED_CHANNEL_ID;
 const spammingUsers = new Map();
 let activeVoteWindow = null;
+const ephemeral = content => ({ content, flags: MessageFlags.Ephemeral });
+// a failed REST call in a timer (vote countdown, pingbomb) shouldn't take the whole bot down
+process.on('unhandledRejection', err => console.error('Unhandled rejection:', err));
 
-app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async function (req, res) {
-  const { type, data } = req.body;
-  const channelId = req.body.channel_id;
-
-  if (type === InteractionType.PING) {
-    return res.send({ type: InteractionResponseType.PONG });
-  }
-
-  // /chat persona picker (36 personas > Discord's 25 fixed choices, so autocomplete)
-  if (type === InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE && data.name === 'chat') {
-    const q = (data.options?.find(opt => opt.focused)?.value || '').toLowerCase();
-    let choices = [];
-    try {
-      choices = (await getPersonas())
-        .filter(p => !q || p.aliases.some(a => a.toLowerCase().includes(q)))
-        .slice(0, 25)
-        .map(p => ({ name: p.name, value: p.id }));
-    } catch (err) {
-      console.error('Persona list failed:', err.message);
-    }
-    return res.send({ type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, data: { choices } });
-  }
-
-  // Handle BUTTONS (e.g. voting)
-  if (type === InteractionType.MESSAGE_COMPONENT) {
-    const { custom_id } = req.body.data;
-    const userId = req.body.member.user.id;
-    const messageId = req.body.message.id;
-
-    const state = activeVoteWindow;
-
-    if (!state || !state.votingActive || state.messageId !== messageId) {
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: 'Voting has already ended or this message is not active.',
-          flags: InteractionResponseFlags.EPHEMERAL,
-        },
-      });
-    }
-
-    if (custom_id === 'vote_yes') {
-      state.voters.add(userId);
-      if (state.voters.size >= 4) {
-        state.votingActive = false;
-        clearInterval(state.interval);
-        await DiscordRequest(`/channels/${state.channelId}/messages`, {
-          method: 'POST',
-          body: { content: '@everyone 🚨 The vote has passed!' },
-        });
-        await DiscordRequest(`/channels/${state.channelId}/messages/${messageId}`, {
-          method: 'PATCH',
-          body: {
-            content: '✅ Vote passed! Everyone has been pinged.',
-            components: [],
-          },
-        });
-        activeVoteWindow = null;
-      }
-      return res.send({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
-    }
-
-    if (custom_id === 'vote_revoke') {
-      state.voters.delete(userId);
-      return res.send({ type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE });
+client.on('interactionCreate', async interaction => {
+  try {
+    if (interaction.isAutocomplete()) return await onAutocomplete(interaction);
+    if (interaction.isButton()) return await onButton(interaction);
+    if (interaction.isChatInputCommand()) return await onCommand(interaction);
+  } catch (err) {
+    console.error(`Interaction failed (${interaction.commandName || interaction.customId}):`, err);
+    if (interaction.isRepliable() && !interaction.replied) {
+      const msg = '⚠️ Something went wrong.';
+      await (interaction.deferred ? interaction.editReply(msg) : interaction.reply(ephemeral(msg))).catch(() => {});
     }
   }
+});
 
-  if (type === InteractionType.APPLICATION_COMMAND) {
-    const { name } = data;
+// /chat persona picker (36 personas > Discord's 25 fixed choices, so autocomplete)
+async function onAutocomplete(interaction) {
+  if (interaction.commandName !== 'chat') return interaction.respond([]);
+  const q = interaction.options.getFocused().toLowerCase();
+  let choices = [];
+  try {
+    choices = (await getPersonas())
+      .filter(p => !q || p.aliases.some(a => a.toLowerCase().includes(q)))
+      .slice(0, 25)
+      .map(p => ({ name: p.name, value: p.id }));
+  } catch (err) {
+    console.error('Persona list failed:', err.message);
+  }
+  return interaction.respond(choices);
+}
 
-    // Enforce channel restriction
-    if (channelId !== allowedChannelId) {
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: "❌ This command can only be used in the designated channel.",
-          flags: InteractionResponseFlags.EPHEMERAL,
-        },
+// Vote buttons from /everyone
+async function onButton(interaction) {
+  const state = activeVoteWindow;
+  const messageId = interaction.message.id;
+
+  if (!state || !state.votingActive || state.messageId !== messageId) {
+    return interaction.reply(ephemeral('Voting has already ended or this message is not active.'));
+  }
+
+  if (interaction.customId === 'vote_yes') {
+    state.voters.add(interaction.user.id);
+    await interaction.deferUpdate();
+    if (state.voters.size >= 4) {
+      state.votingActive = false;
+      clearInterval(state.interval);
+      await DiscordRequest(`/channels/${state.channelId}/messages`, {
+        method: 'POST',
+        body: { content: '@everyone 🚨 The vote has passed!' },
       });
-    }
-
-    if (name === 'test') {
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: `m` },
-      });
-    }
-
-    if (name === 'chat') {
-      const persona = data.options?.find(opt => opt.name === 'persona')?.value || '';
-      const prompt = data.options?.find(opt => opt.name === 'prompt')?.value || '';
-      const invoker = (req.body.member?.user || req.body.user)?.username || 'someone';
-      res.send({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
-
-      // allowed_mentions: only the members the persona named get pinged — never @everyone/@here/roles
-      const edit = (content, users = []) => DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
+      await DiscordRequest(`/channels/${state.channelId}/messages/${messageId}`, {
         method: 'PATCH',
-        body: { content, allowed_mentions: { parse: [], users } },
+        body: { content: '✅ Vote passed! Everyone has been pinged.', components: [] },
       });
+      activeVoteWindow = null;
+    }
+    return;
+  }
 
-      try {
-        const { name: who, reply } = await getPersonaReply(persona, prompt, { channelId, appId: process.env.APP_ID, invoker });
-        const { content, users } = await linkMentions(reply, req.body.guild_id);
-        await edit(formatReply(invoker, prompt, who, content), users);
-      } catch (err) {
-        console.error('Persona chat error:', err);
-        await edit(err.message.startsWith('unknown persona')
-          ? '⚠️ Pick a persona from the list.'
-          : '⚠️ The persona model is unreachable right now.');
-      }
-      return;
+  if (interaction.customId === 'vote_revoke') {
+    state.voters.delete(interaction.user.id);
+    return interaction.deferUpdate();
+  }
+}
+
+async function onCommand(interaction) {
+  const name = interaction.commandName;
+  const channelId = interaction.channelId;
+
+  // Enforce channel restriction
+  if (channelId !== allowedChannelId) {
+    return interaction.reply(ephemeral('❌ This command can only be used in the designated channel.'));
+  }
+
+  if (name === 'test') {
+    return interaction.reply('m');
+  }
+
+  if (name === 'chat') {
+    const persona = interaction.options.getString('persona') || '';
+    const prompt = interaction.options.getString('prompt') || '';
+    const invoker = interaction.user.username;
+    await interaction.deferReply();
+    try {
+      const { name: who, reply } = await getPersonaReply(persona, prompt, { channelId, appId: process.env.APP_ID, invoker });
+      const { content, users } = await linkMentions(reply, interaction.guildId);
+      // only the members the persona named get pinged — never @everyone/@here/roles
+      await interaction.editReply({ content: formatReply(invoker, prompt, who, content), allowedMentions: { parse: [], users } });
+    } catch (err) {
+      console.error('Persona chat error:', err);
+      await interaction.editReply(err.message.startsWith('unknown persona')
+        ? '⚠️ Pick a persona from the list.'
+        : '⚠️ The persona model is unreachable right now.');
+    }
+    return;
+  }
+
+  if (name === 'pingbomb') {
+    const user = interaction.options.getUser('user').id;
+    const initiator = interaction.user.id;
+
+    if (spammingUsers.has(user) && spammingUsers.get(user).active) {
+      return interaction.reply(ephemeral(`<@${user}> is already being pingbombed by <@${spammingUsers.get(user).startedBy}>.`));
     }
 
-    if (name === 'pingbomb') {
-      const user = data.options.find(opt => opt.name === 'user').value;
-      const initiator = req.body.member.user.id;
+    await interaction.reply(`Starting a pingbomb on <@${user}> initiated by <@${initiator}>...`);
+    spammingUsers.set(user, { active: true, startedBy: initiator });
 
-      if (spammingUsers.has(user) && spammingUsers.get(user).active) {
-        return res.send({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            content: `<@${user}> is already being pingbombed by <@${spammingUsers.get(user).startedBy}>.`,
-            flags: InteractionResponseFlags.EPHEMERAL,
-          },
-        });
+    const spamLoop = (i = 1) => {
+      const state = spammingUsers.get(user);
+      if (!state || !state.active) return;
+
+      const delay = Math.floor(Math.random() * 10000);
+      setTimeout(async () => {
+        try {
+          await DiscordRequest(`/channels/${channelId}/messages`, {
+            method: 'POST',
+            body: { content: `<@${user}> ping ${i}` },
+          });
+        } catch (error) {
+          console.error(`Failed to send ping #${i}:`, error);
+        }
+        spamLoop(i + 1);
+      }, delay);
+    };
+
+    spamLoop();
+    return;
+  }
+
+  if (name === 'stopping') {
+    const initiator = interaction.user.id;
+    const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+    const targetUserOption = interaction.options.getUser('user')?.id;
+    let stoppedAny = false;
+
+    if (targetUserOption) {
+      const targetState = spammingUsers.get(targetUserOption);
+      if (targetState && (targetState.startedBy === initiator || initiator === targetUserOption || isAdmin)) {
+        spammingUsers.set(targetUserOption, { ...targetState, active: false });
+        stoppedAny = true;
       }
-
-      res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: `Starting a pingbomb on <@${user}> initiated by <@${initiator}>...`,
-        },
-      });
-
-      spammingUsers.set(user, { active: true, startedBy: initiator });
-
-      const spamLoop = (i = 1) => {
-        const state = spammingUsers.get(user);
-        if (!state || !state.active) return;
-
-        const delay = Math.floor(Math.random() * 10000);
-        setTimeout(async () => {
-          try {
-            await DiscordRequest(`/channels/${channelId}/messages`, {
-              method: 'POST',
-              body: { content: `<@${user}> ping ${i}` },
-            });
-          } catch (error) {
-            console.error(`Failed to send ping #${i}:`, error);
-          }
-          spamLoop(i + 1);
-        }, delay);
-      };
-
-      spamLoop();
-      return;
-    }
-
-    if (name === 'stopping') {
-      const initiator = req.body.member.user.id;
-      const perms = BigInt(req.body.member.permissions || 0);
-      const isAdmin = (perms & 0x00000008n) === 0x00000008n;
-      const targetUserOption = data.options?.find(opt => opt.name === 'user')?.value;
-      let stoppedAny = false;
-
-      if (targetUserOption) {
-        const targetState = spammingUsers.get(targetUserOption);
-        if (targetState && (targetState.startedBy === initiator || initiator === targetUserOption || isAdmin)) {
-          spammingUsers.set(targetUserOption, { ...targetState, active: false });
+    } else {
+      for (const [targetUser, state] of spammingUsers.entries()) {
+        if (state.startedBy === initiator || initiator === targetUser || isAdmin) {
+          spammingUsers.set(targetUser, { ...state, active: false });
           stoppedAny = true;
         }
-      } else {
-        for (const [targetUser, state] of spammingUsers.entries()) {
-          if (state.startedBy === initiator || initiator === targetUser || isAdmin) {
-            spammingUsers.set(targetUser, { ...state, active: false });
-            stoppedAny = true;
-          }
-        }
       }
-
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: stoppedAny
-            ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (isAdmin ? 's have' : 's you started or are targeted by have')} been stopped.`
-            : `You have no permission to stop that pingbomb.`,
-        },
-      });
     }
 
-    if (name === 'help') {
-      const helpText = `
-**bruh** is a multifunctional Discord bot built using Node.js, Express, and the Discord Interactions API.
+    return interaction.reply(stoppedAny
+      ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (isAdmin ? 's have' : 's you started or are targeted by have')} been stopped.`
+      : `You have no permission to stop that pingbomb.`);
+  }
+
+  if (name === 'help') {
+    const helpText = `
+**bruh** is a multifunctional Discord bot built using Node.js and discord.js.
 
 ---
 
@@ -232,123 +190,70 @@ Starts a 60s vote window to everyone if 4 users vote yes.
 ### \`/test\`
 Simple test command.
       `;
-      const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
-
-      res.send({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
-
-      try {
-        await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
-          method: 'PATCH',
-          body: { content: chunks[0] },
-        });
-
-        for (let i = 1; i < chunks.length; i++) {
-          await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}`, {
-            method: 'POST',
-            body: { content: chunks[i] },
-          });
-        }
-      } catch (err) {
-        console.error('Help command failed:', err);
-      }
-      return;
-    }
-
-    if (name === 'everyone') {
-      if (activeVoteWindow?.votingActive) {
-        return res.send({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            content: '⚠️ A vote is already in progress. Please wait for it to end.',
-            flags: InteractionResponseFlags.EPHEMERAL,
-          },
-        });
-      }
-
-      const voters = new Set();
-      const createdAt = Date.now();
-
-      const buildMessage = () => {
-        const secondsRemaining = 60 - Math.floor((Date.now() - createdAt) / 1000);
-        return {
-          content: `🗳️ Vote to ping everyone\n${voters.size}/4 votes — ${[...voters].map(id => `<@${id}>`).join(', ') || 'none'}\n⏳ ${secondsRemaining}s remaining`,
-          components: [
-            {
-              type: MessageComponentTypes.ACTION_ROW,
-              components: [
-                {
-                  type: MessageComponentTypes.BUTTON,
-                  custom_id: 'vote_yes',
-                  label: '✅ Vote',
-                  style: ButtonStyleTypes.SUCCESS,
-                },
-                {
-                  type: MessageComponentTypes.BUTTON,
-                  custom_id: 'vote_revoke',
-                  label: '❌ Revoke',
-                  style: ButtonStyleTypes.DANGER,
-                },
-              ],
-            },
-          ],
-        };
-      };
-
-      const messageRes = await DiscordRequest(`/channels/${channelId}/messages`, {
-        method: 'POST',
-        body: buildMessage(),
-      });
-      const message = await messageRes.json();
-
-      const voteWindow = {
-        voters,
-        votingActive: true,
-        createdAt,
-        messageId: message.id,
-        channelId,
-        interval: null,
-      };
-      activeVoteWindow = voteWindow;
-
-      voteWindow.interval = setInterval(async () => {
-        const seconds = (Date.now() - voteWindow.createdAt) / 1000;
-        if (seconds > 60) {
-          voteWindow.votingActive = false;
-          clearInterval(voteWindow.interval);
-          await DiscordRequest(`/channels/${voteWindow.channelId}/messages/${voteWindow.messageId}`, {
-            method: 'PATCH',
-            body: {
-              content: '🛑 Voting ended.',
-              components: [],
-            },
-          });
-          activeVoteWindow = null;
-          return;
-        }
-
-        await DiscordRequest(`/channels/${voteWindow.channelId}/messages/${voteWindow.messageId}`, {
-          method: 'PATCH',
-          body: buildMessage(),
-        });
-      }, 5000);
-
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: { content: '🗳️ Voting window opened. You have 60 seconds to vote.' },
-      });
-    }
-
-    return res.status(400).json({ error: 'unknown command' });
+    const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
+    await interaction.reply(chunks[0]);
+    for (let i = 1; i < chunks.length; i++) await interaction.followUp(chunks[i]);
+    return;
   }
 
-  return res.status(400).json({ error: 'unknown interaction type' });
-});
+  if (name === 'everyone') {
+    if (activeVoteWindow?.votingActive) {
+      return interaction.reply(ephemeral('⚠️ A vote is already in progress. Please wait for it to end.'));
+    }
 
-app.get('/', (req, res) => {
-  res.send('bruh is alive!');
-});
+    const voters = new Set();
+    const createdAt = Date.now();
 
-app.listen(PORT, () => {
-  console.log('Listening on port', PORT);
-});
+    const buildMessage = () => {
+      const secondsRemaining = 60 - Math.floor((Date.now() - createdAt) / 1000);
+      return {
+        content: `🗳️ Vote to ping everyone\n${voters.size}/4 votes — ${[...voters].map(id => `<@${id}>`).join(', ') || 'none'}\n⏳ ${secondsRemaining}s remaining`,
+        components: [
+          new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('vote_yes').setLabel('✅ Vote').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('vote_revoke').setLabel('❌ Revoke').setStyle(ButtonStyle.Danger),
+          ).toJSON(),
+        ],
+      };
+    };
 
+    const messageRes = await DiscordRequest(`/channels/${channelId}/messages`, {
+      method: 'POST',
+      body: buildMessage(),
+    });
+    const message = await messageRes.json();
+
+    const voteWindow = {
+      voters,
+      votingActive: true,
+      createdAt,
+      messageId: message.id,
+      channelId,
+      interval: null,
+    };
+    activeVoteWindow = voteWindow;
+
+    voteWindow.interval = setInterval(async () => {
+      const seconds = (Date.now() - voteWindow.createdAt) / 1000;
+      if (seconds > 60) {
+        voteWindow.votingActive = false;
+        clearInterval(voteWindow.interval);
+        await DiscordRequest(`/channels/${voteWindow.channelId}/messages/${voteWindow.messageId}`, {
+          method: 'PATCH',
+          body: { content: '🛑 Voting ended.', components: [] },
+        });
+        activeVoteWindow = null;
+        return;
+      }
+
+      await DiscordRequest(`/channels/${voteWindow.channelId}/messages/${voteWindow.messageId}`, {
+        method: 'PATCH',
+        body: buildMessage(),
+      });
+    }, 5000);
+
+    return interaction.reply('🗳️ Voting window opened. You have 60 seconds to vote.');
+  }
+
+  return interaction.reply(ephemeral('Unknown command.'));
+}
