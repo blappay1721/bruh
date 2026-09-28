@@ -17,13 +17,25 @@ export function personaEmbed({ persona, avatar, reply }) {
     .setDescription(reply);
 }
 
-// /chat: the prompt card first (who asked + what), the persona's reply card under it
+// /msg: the prompt card first (who asked + what), the persona's reply card under it
 export function chatEmbeds({ persona, avatar, reply, invoker, invokerAvatar, prompt }) {
   const promptCard = new EmbedBuilder()
     .setColor(NEUTRAL)
     .setAuthor({ name: invoker, ...(invokerAvatar && { iconURL: invokerAvatar }) })
     .setDescription(clip(prompt.trim(), PROMPT_MAX));
   return [promptCard, personaEmbed({ persona, avatar, reply })];
+}
+
+// /ai: prompt card + answer cards. One answer card per message: an embed holds 4096 chars, a message 6000 total.
+// ponytail: splits at a fixed length, so a long code block can break across cards; split on newlines if that bites
+export function aiEmbeds({ reply, invoker, invokerAvatar, prompt, model }) {
+  const promptCard = new EmbedBuilder()
+    .setColor(NEUTRAL)
+    .setAuthor({ name: invoker, ...(invokerAvatar && { iconURL: invokerAvatar }) })
+    .setDescription(clip(prompt.trim(), PROMPT_MAX));
+  const answers = reply.match(/[\s\S]{1,4096}/g).map(part => new EmbedBuilder().setColor(0x10a37f).setDescription(part));
+  answers.at(-1).setFooter({ text: model });
+  return [promptCard, ...answers];
 }
 
 // first message in a new chat channel

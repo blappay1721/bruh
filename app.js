@@ -2,8 +2,8 @@ import 'dotenv/config';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { client } from './client.js';
 import { DiscordRequest } from './utils.js';
-import { findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar } from './utils/ai.js';
-import { chatEmbeds, noticeEmbed, voteEmbed } from './utils/look.js';
+import { askCloud, cloudModel, findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar } from './utils/ai.js';
+import { aiEmbeds, chatEmbeds, noticeEmbed, voteEmbed } from './utils/look.js';
 import { config, save, CONFIG_SPEC } from './utils/store.js';
 import {
   UserError, canControl, chatOf, closeChat, createChat, forget, onMessage, openChatsOf, startSweeper, switchPersona,
@@ -38,7 +38,7 @@ client.on('interactionCreate', async interaction => {
 
 // persona pickers (36 personas > Discord's 25 fixed choices, so autocomplete)
 async function onAutocomplete(interaction) {
-  if (!['chat', 'create-chat', 'switch'].includes(interaction.commandName)) return interaction.respond([]);
+  if (!['msg', 'chat', 'switch'].includes(interaction.commandName)) return interaction.respond([]);
   const q = interaction.options.getFocused().toLowerCase();
   let choices = [];
   try {
@@ -116,7 +116,27 @@ async function onCommand(interaction) {
     return interaction.reply('m');
   }
 
-  if (name === 'chat') {
+  if (name === 'ai') {
+    const prompt = interaction.options.getString('prompt');
+    await interaction.deferReply();
+    let reply;
+    try {
+      reply = await askCloud(prompt, interaction.user.username);
+    } catch (err) {
+      console.error('Ollama Cloud error:', err.message);
+      return interaction.editReply(err.message === 'busy' ? '⏳ The AI is rate-limited right now. Try again in a minute.'
+        : '⚠️ The AI is unreachable right now.');
+    }
+    const [promptCard, ...answers] = aiEmbeds({
+      reply, invoker: interaction.user.username, invokerAvatar: interaction.user.displayAvatarURL(), prompt, model: cloudModel,
+    });
+    const noPings = { parse: [] }; // the model can write @everyone or <@id>; never let it ping
+    await interaction.editReply({ embeds: [promptCard, answers[0]], allowedMentions: noPings });
+    for (const card of answers.slice(1)) await interaction.followUp({ embeds: [card], allowedMentions: noPings });
+    return;
+  }
+
+  if (name === 'msg') {
     const personaValue = interaction.options.getString('persona') || '';
     const prompt = interaction.options.getString('prompt') || '';
     const invoker = interaction.user.username;
@@ -142,7 +162,7 @@ async function onCommand(interaction) {
     return;
   }
 
-  if (name === 'create-chat') {
+  if (name === 'chat') {
     const persona = await findPersona(interaction.options.getString('persona'));
     if (!persona) return interaction.reply(ephemeral('⚠️ Pick a persona from the list.'));
     const open = openChatsOf(interaction.user.id);
@@ -224,10 +244,13 @@ async function onCommand(interaction) {
 
 ## 🚀 Features
 
-### \`/chat\`
+### \`/ai\`
+Ask a question and get a real answer (${cloudModel} on Ollama Cloud).
+
+### \`/msg\`
 Pick a persona and they reply in their own voice (fine-tuned model + past-chat memory).
 
-### \`/create-chat\`
+### \`/chat\`
 Open your own channel to chat with a persona (private or public). \`/switch\` changes who you're talking to, \`/close\` ends it. Idle chats close after ${config.chatTimeoutMin} min.
 
 ### \`/pingbomb\`
@@ -301,7 +324,7 @@ Simple test command.
 // /switch and /close: only inside a chat channel, only its creator or an admin
 async function onChatControl(interaction) {
   const chat = chatOf(interaction.channelId);
-  if (!chat) return interaction.reply(ephemeral('This only works inside a chat channel made with `/create-chat`.'));
+  if (!chat) return interaction.reply(ephemeral('This only works inside a chat channel made with `/chat`.'));
   if (!canControl(chat, interaction.user.id, isAdmin(interaction))) {
     return interaction.reply(ephemeral(`Only <@${chat.owner}> (or an admin) can do that here.`));
   }

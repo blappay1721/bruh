@@ -1,4 +1,4 @@
-// Persona chat channels: /create-chat, replies to every message, /switch, /close, inactivity cleanup.
+// Persona chat channels: /chat, replies to every message, /switch, /close, inactivity cleanup.
 import { ChannelType, PermissionFlagsBits as P, WebhookClient } from 'discord.js';
 import { state, config, save, saveSoon } from './store.js';
 import { askPersona, discordTurns, findPersona, linkMentions, personaAvatar } from './ai.js';

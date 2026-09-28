@@ -5,7 +5,7 @@ import { isPersonaEmbed } from './look.js';
 
 const API = process.env.PERSONA_API_URL || 'http://127.0.0.1:8787';
 const HISTORY = 30; // messages sent as context; the server trims to the training window (8 turns, 45-min session)
-// /chat is one-off by default. PERSONA_CONTEXT=1 also sends recent channel chat + earlier /chat replies.
+// /msg is one-off by default. PERSONA_CONTEXT=1 also sends recent channel chat + earlier /msg replies.
 const USE_CONTEXT = process.env.PERSONA_CONTEXT === '1';
 
 // ---------- personas ----------
@@ -43,11 +43,36 @@ export async function askPersona(persona, messages, session = undefined) {
   return data;
 }
 
-// /chat: one prompt (plus channel context when PERSONA_CONTEXT=1)
+// /msg: one prompt (plus channel context when PERSONA_CONTEXT=1)
 export async function getPersonaReply(persona, prompt, { channelId, appId, invoker }) {
   const messages = USE_CONTEXT ? restTurns(await channelHistory(channelId), appId) : [];
   messages.push({ author: invoker, text: prompt, ts: new Date().toISOString() });
   return askPersona(persona, messages);
+}
+
+// ---------- /ai: general assistant on Ollama Cloud ----------
+const CLOUD_MODEL = process.env.OLLAMA_MODEL || 'gpt-oss:120b';
+const CLOUD_SYSTEM = 'You are a helpful assistant in a Discord server. Answer accurately and to the point. '
+  + 'Use Discord markdown (bold, lists, code blocks); no tables, no LaTeX. Keep answers under ~1500 words.';
+export const cloudModel = CLOUD_MODEL;
+
+export async function askCloud(prompt, invoker) {
+  if (!process.env.OLLAMA_API_KEY) throw new Error('OLLAMA_API_KEY is not set');
+  const res = await fetch('https://ollama.com/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OLLAMA_API_KEY}` },
+    body: JSON.stringify({
+      model: CLOUD_MODEL,
+      stream: false,
+      messages: [{ role: 'system', content: CLOUD_SYSTEM }, { role: 'user', content: `${invoker}: ${prompt}` }],
+    }),
+    signal: AbortSignal.timeout(180_000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(res.status === 429 ? 'busy' : data.error || `ollama cloud ${res.status}`);
+  const reply = data.message?.content?.trim(); // gpt-oss puts its reasoning in message.thinking, not here
+  if (!reply) throw new Error('empty reply from ollama cloud');
+  return reply;
 }
 
 // ---------- Discord message -> turn ----------
@@ -85,13 +110,13 @@ export function discordTurns(messages, { webhookId, persona, botId }) {
   return turns;
 }
 
-// /chat context mode (raw REST messages, oldest first); earlier /chat replies are read back from their embeds
+// /msg context mode (raw REST messages, oldest first); earlier /msg replies are read back from their embeds
 function restTurns(messages, appId) {
   const turns = [];
   for (const m of messages) {
     if (m.author?.bot) {
       if (m.author.id !== appId) continue;
-      const [ask, answer] = m.embeds || []; // /chat = prompt card + persona reply card
+      const [ask, answer] = m.embeds || []; // /msg = prompt card + persona reply card
       if (ask?.author?.name && ask.description && isPersonaEmbed(answer)) {
         turns.push({ author: ask.author.name, text: ask.description, ts: m.timestamp }, { author: answer.author.name, text: answer.description, ts: m.timestamp });
       }

@@ -46,8 +46,17 @@ const STOPPING_COMMAND = {
   contexts: [0, 1, 2],
 };
 
-const CHAT_COMMAND = {
-  name: 'chat',
+const AI_COMMAND = {
+  name: 'ai',
+  description: 'Ask the AI anything and get a helpful answer',
+  options: [{ type: 3, name: 'prompt', description: 'Your question', required: true, max_length: 4000 }],
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const MSG_COMMAND = {
+  name: 'msg',
   description: 'Get a reply from someone in the group, in their voice',
   options: [
     {
@@ -86,8 +95,8 @@ const EVERYONE_COMMAND = {
   contexts: [0, 1, 2],
 };
 
-const CREATE_CHAT_COMMAND = {
-  name: 'create-chat',
+const CHAT_COMMAND = {
+  name: 'chat',
   description: 'Open your own chat channel with a persona',
   type: 1,
   options: [
@@ -138,8 +147,8 @@ const CONFIG_COMMAND = {
   ...GUILD_ONLY,
 };
 
-const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, CHAT_COMMAND, HELP_COMMAND, EVERYONE_COMMAND,
-  CREATE_CHAT_COMMAND, SWITCH_COMMAND, CLOSE_COMMAND, CONFIG_COMMAND];
+const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, AI_COMMAND, MSG_COMMAND, HELP_COMMAND, EVERYONE_COMMAND,
+  CHAT_COMMAND, SWITCH_COMMAND, CLOSE_COMMAND, CONFIG_COMMAND];
 
 InstallGuildCommands(process.env.APP_ID, process.env.GUILD_ID, ALL_COMMANDS)
   .then(() => console.log("✅ Slash commands registered successfully"))
