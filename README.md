@@ -21,6 +21,28 @@ Someone from the group replies to the chat, in their own voice.
 
 ---
 
+### `/create-chat`
+Opens your own channel to chat with a persona — just type, and they answer as themselves (their name + avatar).
+
+- **Usage**: `/create-chat persona: <pick> visibility: private|public`
+- **Private**: only you, the bot, and admins can see it. **Public**: everyone who can see the chat category can join in.
+- Replies use the recent conversation in that channel (the last 8 turns — the window the model was trained on). Several quick messages get one answer.
+- Channels are created at the bottom of the chat category, named like `💬-saintsf-bernard`.
+- One open chat per person (admins: `/config chat-limit`). Idle chats get a 1-minute warning, then are deleted after 10 minutes (`/config chat-timeout`).
+
+### `/switch`
+Inside a chat channel: talk to a different persona. `/switch persona: <pick>` — only the chat's creator or an admin.
+
+### `/close`
+Inside a chat channel: deletes it. Only the chat's creator or an admin.
+
+### `/config` (admins only)
+`/config show` lists everything. Settings: `chat-timeout`, `chat-limit`, `chat-category`, `vote-threshold`, `vote-duration`, `pingbomb-interval`. Saved in `data/state.json`, so they survive restarts.
+
+> Chat channels need the bot to have **Manage Channels** and **Manage Webhooks** in the chat category.
+
+---
+
 ## 🧠 Persona model setup
 
 `/chat` needs two things running next to the bot (see `bruh-data/Scripts/Phase_7`):

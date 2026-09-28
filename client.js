@@ -4,7 +4,8 @@ import 'dotenv/config';
 // Slash commands, autocomplete and buttons arrive over this gateway connection (app.js),
 // so no public URL / tunnel is needed. Keep the Developer Portal's Interactions Endpoint URL empty.
 export const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  // GuildMessages + MessageContent: chat channels answer normal messages (Message Content Intent must be ON in the portal)
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 });
 
 client.once('ready', () => {

@@ -1,14 +1,13 @@
-// /chat client for the persona model.
-// The prompt is built by bruh-data/Scripts/Phase_7/persona_server.py, exactly like the model's training data
-// (style card + retrieved style lines/facts + recent chat), so this file only gathers the chat and formats the reply.
+// Persona model client. Prompts are built by bruh-data/Scripts/Phase_7/persona_server.py exactly like the model's
+// training data (style card + retrieved style lines/facts + chat turns); this file gathers the chat and resolves names.
 import { DiscordRequest } from '../utils.js';
 
 const API = process.env.PERSONA_API_URL || 'http://127.0.0.1:8787';
-const HISTORY = 30; // channel messages sent as context; the server trims to the training window (8 turns, 45-min session)
-const PROMPT_QUOTE = 200; // chars of the prompt echoed above the reply
-// our own reply format (see formatReply) — parsed back out of history so follow-up /chats keep the conversation
-const REPLY_RE = /^> \*\*(.+?)\*\*: (.*)\n\*\*(.+?)\*\*: ([\s\S]*)$/;
+const HISTORY = 30; // messages sent as context; the server trims to the training window (8 turns, 45-min session)
+// /chat is one-off by default. PERSONA_CONTEXT=1 also sends recent channel chat + earlier /chat replies.
+const USE_CONTEXT = process.env.PERSONA_CONTEXT === '1';
 
+// ---------- personas ----------
 let personas = null;
 let personasAt = 0;
 
@@ -22,77 +21,83 @@ export async function getPersonas() {
   return personas;
 }
 
-export function formatReply(invoker, prompt, name, reply) {
-  const quote = prompt.replace(/\s+/g, ' ').slice(0, PROMPT_QUOTE);
-  return `> **${invoker}**: ${quote}\n**${name}**: ${reply}`;
+// persona id ("u_003") or any of its usernames -> { id, name, aliases, turns } | null
+export async function findPersona(value) {
+  const v = (value || '').toLowerCase();
+  return (await getPersonas()).find(p => p.id === value || p.aliases.some(a => a.toLowerCase() === v)) || null;
 }
 
-// <@id> -> @username, custom emoji -> :name: (the training export's format)
-function plainMentions(m) {
-  let t = m.content || '';
-  for (const u of m.mentions || []) t = t.replace(new RegExp(`<@!?${u.id}>`, 'g'), `@${u.username}`);
-  return t.replace(/<a?:(\w+):\d+>/g, ':$1:').replace(/<#\d+>/g, '#channel').replace(/<@&\d+>/g, '@role');
+// ---------- model ----------
+// messages: [{ author: username, text, ts: ISO }] oldest first -> { reply, name, persona, debug }
+export async function askPersona(persona, messages) {
+  const res = await fetch(`${API}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ persona, messages }),
+    signal: AbortSignal.timeout(170_000), // CPU box; interaction tokens last 15 min
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `persona server ${res.status}`);
+  return data;
 }
 
-// Discord API message -> text the way the training export wrote it (@username, :emoji:, [sticker], attachment URL)
-function messageText(m) {
-  const extras = [...(m.sticker_items?.length ? ['[sticker]'] : []), ...(m.attachments || []).map(a => a.url)];
-  return [plainMentions(m).trim(), ...extras].filter(Boolean).join('\n');
+// /chat: one prompt (plus channel context when PERSONA_CONTEXT=1)
+export async function getPersonaReply(persona, prompt, { channelId, appId, invoker }) {
+  const messages = USE_CONTEXT ? restTurns(await channelHistory(channelId), appId) : [];
+  messages.push({ author: invoker, text: prompt, ts: new Date().toISOString() });
+  return askPersona(persona, messages);
 }
 
-// "@name" in a reply -> a real ping for any server member whose username / display name / nickname is exactly that.
-// Names in the chat logs are often display names with spaces ("@The Living Meme"), so try 3, 2, then 1 words.
-// Member search is a prefix match, so one search on the first word covers every candidate length.
-const memberCache = new Map(); // `${guildId}|${firstWord}` -> { names: Map(lowercase name -> id), at }
-async function membersStartingWith(guildId, word) {
-  const key = `${guildId}|${word.toLowerCase()}`;
-  const hit = memberCache.get(key);
-  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.names;
-  const names = new Map();
-  try {
-    const res = await DiscordRequest(`guilds/${guildId}/members/search?query=${encodeURIComponent(word)}&limit=25`, { method: 'GET' });
-    for (const x of await res.json()) {
-      for (const n of [x.user?.username, x.user?.global_name, x.nick]) if (n) names.set(n.toLowerCase(), x.user.id);
+// /chat embed footer — parsed back by restTurns in context mode
+export const askedFooter = (invoker, prompt) => `💬 ${invoker} asked: ${prompt.replace(/\s+/g, ' ').slice(0, 200)}`;
+const ASKED_RE = /^💬 (.+?) asked: (.*)$/s;
+
+// ---------- Discord message -> turn ----------
+// the training export wrote @username, :emoji:, [sticker] and attachment URLs, so normalize to that
+function messageText({ content = '', mentions = [], stickers = 0, attachments = [] }) {
+  let t = content;
+  for (const u of mentions) t = t.replace(new RegExp(`<@!?${u.id}>`, 'g'), `@${u.username}`);
+  t = t.replace(/<a?:(\w+):\d+>/g, ':$1:').replace(/<#\d+>/g, '#channel').replace(/<@&\d+>/g, '@role');
+  return [t.trim(), ...(stickers ? ['[sticker]'] : []), ...attachments.map(a => a.url)].filter(Boolean).join('\n');
+}
+
+// chat channels (discord.js Messages, oldest first): people's messages + this chat's persona lines (sent by its webhook)
+export function discordTurns(messages, { webhookId, persona }) {
+  const self = new Set(persona.aliases.map(a => a.toLowerCase()));
+  const turns = [];
+  for (const m of messages) {
+    let author;
+    if (m.webhookId) {
+      if (m.webhookId !== webhookId) continue;
+      author = m.author.username; // the persona name the line was sent as (earlier personas stay themselves after /switch)
+    } else if (m.author.bot) {
+      continue; // intros, notices, other bots
+    } else {
+      // someone chatting with their own persona: "u_002 replying to u_002" confuses the model
+      author = self.has(m.author.username.toLowerCase()) ? 'someone' : m.author.username;
     }
-  } catch { /* no member search access: leave as text */ }
-  memberCache.set(key, { names, at: Date.now() });
-  return names;
-}
-
-export async function linkMentions(reply, guildId) {
-  if (!guildId) return { content: reply, users: [] }; // DMs: nobody to ping
-  const users = new Set();
-  let out = '';
-  let last = 0;
-  for (const m of reply.matchAll(/@([^\s@]+(?: [^\s@]+){0,2})/g)) {
-    const words = m[1].split(' ');
-    const first = words[0].replace(/[.,!?:;)]+$/, '');
-    if (!first || /^(everyone|here)$/i.test(first)) continue;
-    const known = await membersStartingWith(guildId, first);
-    for (let n = words.length; n >= 1; n--) {
-      const name = words.slice(0, n).join(' ').replace(/[.,!?:;)]+$/, ''); // "@saintsf." at the end of a sentence
-      const id = known.get(name.toLowerCase());
-      if (id) {
-        out += reply.slice(last, m.index) + `<@${id}>`;
-        last = m.index + 1 + name.length;
-        users.add(id);
-        break;
-      }
-    }
+    const text = messageText({
+      content: m.content, mentions: [...m.mentions.users.values()], stickers: m.stickers.size, attachments: [...m.attachments.values()],
+    });
+    if (text) turns.push({ author, text, ts: m.createdAt.toISOString() });
   }
-  return { content: out + reply.slice(last), users: [...users].slice(0, 100) };
+  return turns;
 }
 
-function toTurns(messages, appId) {
+// /chat context mode (raw REST messages, oldest first); earlier /chat replies are read back from their embeds
+function restTurns(messages, appId) {
   const turns = [];
   for (const m of messages) {
     if (m.author?.bot) {
-      if (m.author.id !== appId) continue; // other bots aren't people
-      const r = REPLY_RE.exec(plainMentions(m)); // our own replies contain real <@id> pings -> back to @name
-      if (r) turns.push({ author: r[1], text: r[2], ts: m.timestamp }, { author: r[3], text: r[4], ts: m.timestamp });
+      if (m.author.id !== appId) continue;
+      const e = m.embeds?.[0];
+      const asked = ASKED_RE.exec(e?.footer?.text || '');
+      if (e?.author?.name && e.description && asked) {
+        turns.push({ author: asked[1], text: asked[2], ts: m.timestamp }, { author: e.author.name, text: e.description, ts: m.timestamp });
+      }
       continue;
     }
-    const text = messageText(m);
+    const text = messageText({ content: m.content, mentions: m.mentions, stickers: m.sticker_items?.length, attachments: m.attachments });
     if (text) turns.push({ author: m.author.username, text, ts: m.timestamp });
   }
   return turns;
@@ -107,20 +112,67 @@ async function channelHistory(channelId) {
   }
 }
 
-// one-off by default: each /chat answers only its prompt. PERSONA_CONTEXT=1 also sends recent channel chat + earlier replies.
-const USE_CONTEXT = process.env.PERSONA_CONTEXT === '1';
+// ---------- server members: pings + avatars ----------
+// Member search is a prefix match, so one search on a first word covers every multi-word name starting with it.
+const memberCache = new Map(); // `${guildId}|${word}` -> { names: Map(lowercase name -> user), at }
+async function membersStartingWith(guildId, word) {
+  const key = `${guildId}|${word.toLowerCase()}`;
+  const hit = memberCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.names;
+  const names = new Map();
+  try {
+    const res = await DiscordRequest(`guilds/${guildId}/members/search?query=${encodeURIComponent(word)}&limit=25`, { method: 'GET' });
+    for (const x of await res.json()) {
+      for (const n of [x.user?.username, x.user?.global_name, x.nick]) if (n) names.set(n.toLowerCase(), x.user);
+    }
+  } catch { /* no member search access: names stay plain text, no avatars */ }
+  memberCache.set(key, { names, at: Date.now() });
+  return names;
+}
 
-// -> { reply, name, persona, debug }
-export async function getPersonaReply(persona, prompt, { channelId, appId, invoker }) {
-  const messages = USE_CONTEXT ? toTurns(await channelHistory(channelId), appId) : [];
-  messages.push({ author: invoker, text: prompt, ts: new Date().toISOString() });
-  const res = await fetch(`${API}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ persona, messages }),
-    signal: AbortSignal.timeout(170_000), // CPU box; interaction tokens last 15 min
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || `persona server ${res.status}`);
-  return data;
+// "@name" in a reply -> a real ping for any server member whose username / display name / nickname is exactly that.
+// Names in the chat logs are often display names with spaces ("@The Living Meme"), so try 3, 2, then 1 words.
+export async function linkMentions(reply, guildId) {
+  if (!guildId) return { content: reply, users: [] }; // DMs: nobody to ping
+  const users = new Set();
+  let out = '';
+  let last = 0;
+  for (const m of reply.matchAll(/@([^\s@]+(?: [^\s@]+){0,2})/g)) {
+    const words = m[1].split(' ');
+    const first = words[0].replace(/[.,!?:;)]+$/, '');
+    if (!first || /^(everyone|here)$/i.test(first)) continue;
+    const known = await membersStartingWith(guildId, first);
+    for (let n = words.length; n >= 1; n--) {
+      const name = words.slice(0, n).join(' ').replace(/[.,!?:;)]+$/, ''); // "@saintsf." at the end of a sentence
+      const id = known.get(name.toLowerCase())?.id;
+      if (id) {
+        out += reply.slice(last, m.index) + `<@${id}>`;
+        last = m.index + 1 + name.length;
+        users.add(id);
+        break;
+      }
+    }
+  }
+  return { content: out + reply.slice(last), users: [...users].slice(0, 100) };
+}
+
+// the real person's Discord avatar for a persona (null if they're not in the server)
+const avatarCache = new Map();
+export async function personaAvatar(guildId, persona) {
+  const key = `${guildId}|${persona.id}`;
+  if (avatarCache.has(key)) return avatarCache.get(key);
+  let url = null;
+  if (guildId) {
+    for (const alias of persona.aliases) {
+      const u = (await membersStartingWith(guildId, alias.split(' ')[0])).get(alias.toLowerCase());
+      if (u) {
+        url = u.avatar
+          ? `https://cdn.discordapp.com/avatars/${u.id}/${u.avatar}.png?size=128`
+          : `https://cdn.discordapp.com/embed/avatars/${Number((BigInt(u.id) >> 22n) % 6n)}.png`;
+        break;
+      }
+    }
+  }
+  avatarCache.set(key, url);
+  return url;
 }
