@@ -3,7 +3,7 @@ import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, PermissionF
 import { client } from './client.js';
 import { DiscordRequest } from './utils.js';
 import { findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar } from './utils/ai.js';
-import { chatEmbeds, noticeEmbed } from './utils/look.js';
+import { chatEmbeds, noticeEmbed, voteEmbed } from './utils/look.js';
 import { config, save, CONFIG_SPEC } from './utils/store.js';
 import {
   UserError, canControl, chatOf, closeChat, createChat, forget, onMessage, openChatsOf, startSweeper, switchPersona,
@@ -61,28 +61,34 @@ async function onButton(interaction) {
     return interaction.reply(ephemeral('Voting has already ended or this message is not active.'));
   }
 
+  // buttons are shared by everyone, so per-user state (voted or not) is checked here, not shown
+  const voted = state.voters.has(interaction.user.id);
   if (interaction.customId === 'vote_yes') {
+    if (voted) return interaction.reply(ephemeral('You already voted.'));
     state.voters.add(interaction.user.id);
-    await interaction.deferUpdate();
-    if (state.voters.size >= state.threshold) {
-      state.votingActive = false;
-      clearInterval(state.interval);
-      await DiscordRequest(`/channels/${state.channelId}/messages`, {
-        method: 'POST',
-        body: { content: '@everyone 🚨 The vote has passed!' },
-      });
-      await DiscordRequest(`/channels/${state.channelId}/messages/${messageId}`, {
-        method: 'PATCH',
-        body: { content: '✅ Vote passed! Everyone has been pinged.', components: [] },
-      });
-      activeVoteWindow = null;
-    }
+    if (state.voters.size < state.threshold) return interaction.update(state.render('open'));
+
+    state.votingActive = false;
+    clearTimeout(state.timer);
+    activeVoteWindow = null;
+    await interaction.update(state.render('passed'));
+    // the ping itself: the invoker's message as context, replying to the vote card that approved it
+    await DiscordRequest(`/channels/${state.channelId}/messages`, {
+      method: 'POST',
+      body: {
+        content: '@everyone',
+        embeds: [noticeEmbed(state.message.trim().slice(0, 4096)).setAuthor({ name: state.invoker, iconURL: state.invokerAvatar }).toJSON()],
+        message_reference: { message_id: messageId, fail_if_not_exists: false },
+        allowed_mentions: { parse: ['everyone'] },
+      },
+    });
     return;
   }
 
   if (interaction.customId === 'vote_revoke') {
+    if (!voted) return interaction.reply(ephemeral("You haven't voted."));
     state.voters.delete(interaction.user.id);
-    return interaction.deferUpdate();
+    return interaction.update(state.render('open'));
   }
 }
 
@@ -222,7 +228,7 @@ Spam-pings a user randomly until stopped.
 Stop pingbombs you've started or are targeted by.
 
 ### \`/everyone\`
-Starts a ${config.voteSeconds}s vote to ping everyone if ${config.voteThreshold} users vote yes.
+\`/everyone message:<why>\` starts a ${config.voteSeconds}s vote. If ${config.voteThreshold} people vote yes, everyone is pinged with your message.
 
 ### \`/config\`
 Admins: bot settings.
@@ -241,61 +247,45 @@ Simple test command.
       return interaction.reply(ephemeral('⚠️ A vote is already in progress. Please wait for it to end.'));
     }
 
-    const voters = new Set();
-    const createdAt = Date.now();
-    const threshold = config.voteThreshold; // fixed for this vote even if /config changes mid-vote
+    const voteWindow = {
+      voters: new Set(),
+      votingActive: true,
+      threshold: config.voteThreshold, // fixed for this vote even if /config changes mid-vote
+      message: interaction.options.getString('message'),
+      invoker: interaction.member?.displayName ?? interaction.user.displayName,
+      invokerAvatar: interaction.user.displayAvatarURL(),
+      channelId,
+    };
+    activeVoteWindow = voteWindow; // claimed before any await, so two /everyone at once can't both start
     const duration = config.voteSeconds;
+    const endsAt = Math.floor(Date.now() / 1000) + duration;
 
-    const buildMessage = () => {
-      const secondsRemaining = duration - Math.floor((Date.now() - createdAt) / 1000);
+    // <t:…:R> is ticked live by each Discord client, so the card is only edited when votes change
+    voteWindow.render = status => {
+      const buttons = [new ButtonBuilder().setCustomId('vote_yes').setLabel('Vote yes').setEmoji('✅').setStyle(ButtonStyle.Success)];
+      if (voteWindow.voters.size) {
+        buttons.push(new ButtonBuilder().setCustomId('vote_revoke').setLabel('Revoke vote').setStyle(ButtonStyle.Secondary));
+      }
       return {
-        content: `🗳️ Vote to ping everyone\n${voters.size}/${threshold} votes — ${[...voters].map(id => `<@${id}>`).join(', ') || 'none'}\n⏳ ${secondsRemaining}s remaining`,
-        components: [
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('vote_yes').setLabel('✅ Vote').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('vote_revoke').setLabel('❌ Revoke').setStyle(ButtonStyle.Danger),
-          ).toJSON(),
-        ],
+        embeds: [voteEmbed({ ...voteWindow, status, endsAt })],
+        components: status === 'open' ? [new ActionRowBuilder().addComponents(buttons)] : [],
       };
     };
 
-    const messageRes = await DiscordRequest(`/channels/${channelId}/messages`, {
-      method: 'POST',
-      body: buildMessage(),
-    });
-    const message = await messageRes.json();
+    try {
+      const res = await interaction.reply({ ...voteWindow.render('open'), withResponse: true });
+      voteWindow.messageId = res.resource.message.id;
+    } catch (err) {
+      activeVoteWindow = null;
+      throw err;
+    }
 
-    const voteWindow = {
-      voters,
-      votingActive: true,
-      createdAt,
-      threshold,
-      messageId: message.id,
-      channelId,
-      interval: null,
-    };
-    activeVoteWindow = voteWindow;
-
-    voteWindow.interval = setInterval(async () => {
-      const seconds = (Date.now() - voteWindow.createdAt) / 1000;
-      if (seconds > duration) {
-        voteWindow.votingActive = false;
-        clearInterval(voteWindow.interval);
-        await DiscordRequest(`/channels/${voteWindow.channelId}/messages/${voteWindow.messageId}`, {
-          method: 'PATCH',
-          body: { content: '🛑 Voting ended.', components: [] },
-        });
-        activeVoteWindow = null;
-        return;
-      }
-
-      await DiscordRequest(`/channels/${voteWindow.channelId}/messages/${voteWindow.messageId}`, {
-        method: 'PATCH',
-        body: buildMessage(),
-      });
-    }, 5000);
-
-    return interaction.reply(`🗳️ Voting window opened. You have ${duration} seconds to vote.`);
+    voteWindow.timer = setTimeout(() => {
+      voteWindow.votingActive = false;
+      activeVoteWindow = null;
+      return interaction.editReply(voteWindow.render('failed')); // same card, no new message
+    }, duration * 1000);
+    return;
   }
 
   return interaction.reply(ephemeral('Unknown command.'));

@@ -81,6 +81,7 @@ const EVERYONE_COMMAND = {
   name: 'everyone',
   description: 'Open a vote window to mention @everyone if enough people agree',
   type: 1,
+  options: [{ type: 3, name: 'message', description: 'What everyone is being pinged about', required: true, max_length: 1000 }],
   integration_types: [0, 1],
   contexts: [0, 1, 2],
 };

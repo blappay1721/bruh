@@ -36,7 +36,27 @@ export function introEmbed({ persona, avatar, ownerId, isPrivate, timeoutMin }) 
     .setFooter({ text: `${isPrivate ? '🔒 Private' : '🌐 Public'} · closes after ${timeoutMin} min without messages` });
 }
 
-export const noticeEmbed = (text, color = NEUTRAL) => new EmbedBuilder().setColor(color).setDescription(text);
+// /everyone vote card: status is 'open' | 'passed' | 'failed'
+const VOTE_LOOK = {
+  open: { color: 0x5865f2, title: 'Vote: ping @everyone' },
+  passed: { color: 0x57f287, title: '✅ Vote passed: @everyone was pinged' },
+  failed: { color: 0xed4245, title: '❌ Vote failed: not enough votes' },
+};
+export function voteEmbed({ status, invoker, invokerAvatar, message, voters, threshold, endsAt }) {
+  const { color, title } = VOTE_LOOK[status];
+  const list = voters.size ? clip([...voters].map(id => `<@${id}>`).join('\n'), 1024) : '*No votes yet*'; // field limit
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setAuthor({ name: invoker, ...(invokerAvatar && { iconURL: invokerAvatar }) })
+    .setTitle(title)
+    .setDescription(clip(message.trim(), PROMPT_MAX).replace(/^/gm, '> '))
+    .addFields({ name: `Voted yes · ${voters.size}/${threshold}`, value: list, inline: true });
+  if (status === 'open') embed.addFields({ name: 'Closes', value: `<t:${endsAt}:R>`, inline: true });
+  else embed.setTimestamp();
+  return embed;
+}
+
+export const noticeEmbed =(text, color = NEUTRAL) => new EmbedBuilder().setColor(color).setDescription(text);
 
 // is this bot embed a persona line (vs. an intro or a notice)? used to read chat history back
 export const isPersonaEmbed = e => Boolean(e?.author?.name && e.description && !e.author.name.startsWith('Chatting with'));
