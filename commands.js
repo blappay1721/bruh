@@ -44,12 +44,19 @@ const STOPPING_COMMAND = {
 
 const CHAT_COMMAND = {
   name: 'chat',
-  description: 'Chat with bruh bot',
+  description: 'Get a reply from someone in the group, in their voice',
   options: [
     {
       type: 3, // STRING
+      name: 'persona',
+      description: 'Who should reply',
+      required: true,
+      autocomplete: true, // list comes from the persona server (more than Discord's 25 fixed choices)
+    },
+    {
+      type: 3, // STRING
       name: 'prompt',
-      description: 'Message to send to the bot',
+      description: 'What you say to them',
       required: true,
     },
   ],

@@ -10,7 +10,7 @@ import {
   verifyKeyMiddleware,
 } from 'discord-interactions';
 import { getRandomEmoji, DiscordRequest } from './utils.js';
-import { getAIResponse } from './utils/ai.js';
+import { getPersonas, getPersonaReply, formatReply, linkMentions } from './utils/ai.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +24,21 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 
   if (type === InteractionType.PING) {
     return res.send({ type: InteractionResponseType.PONG });
+  }
+
+  // /chat persona picker (36 personas > Discord's 25 fixed choices, so autocomplete)
+  if (type === InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE && data.name === 'chat') {
+    const q = (data.options?.find(opt => opt.focused)?.value || '').toLowerCase();
+    let choices = [];
+    try {
+      choices = (await getPersonas())
+        .filter(p => !q || p.aliases.some(a => a.toLowerCase().includes(q)))
+        .slice(0, 25)
+        .map(p => ({ name: p.name, value: p.id }));
+    } catch (err) {
+      console.error('Persona list failed:', err.message);
+    }
+    return res.send({ type: InteractionResponseType.APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, data: { choices } });
   }
 
   // Handle BUTTONS (e.g. voting)
@@ -93,30 +108,26 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
     }
 
     if (name === 'chat') {
+      const persona = data.options?.find(opt => opt.name === 'persona')?.value || '';
       const prompt = data.options?.find(opt => opt.name === 'prompt')?.value || '';
+      const invoker = (req.body.member?.user || req.body.user)?.username || 'someone';
       res.send({ type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE });
 
+      // allowed_mentions: only the members the persona named get pinged — never @everyone/@here/roles
+      const edit = (content, users = []) => DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
+        method: 'PATCH',
+        body: { content, allowed_mentions: { parse: [], users } },
+      });
+
       try {
-        const reply = await getAIResponse(prompt);
-        const chunks = reply.match(/[\s\S]{1,2000}/g) || ['(empty response)'];
-
-        await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
-          method: 'PATCH',
-          body: { content: `**You asked:** ${prompt}\n\n${chunks[0]}` },
-        });
-
-        for (let i = 1; i < chunks.length; i++) {
-          await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}`, {
-            method: 'POST',
-            body: { content: `*(continued)*\n${chunks[i]}` },
-          });
-        }
+        const { name: who, reply } = await getPersonaReply(persona, prompt, { channelId, appId: process.env.APP_ID, invoker });
+        const { content, users } = await linkMentions(reply, req.body.guild_id);
+        await edit(formatReply(invoker, prompt, who, content), users);
       } catch (err) {
-        console.error('AI error:', err);
-        await DiscordRequest(`/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`, {
-          method: 'PATCH',
-          body: { content: '⚠️ Failed to fetch response from the AI.' },
-        });
+        console.error('Persona chat error:', err);
+        await edit(err.message.startsWith('unknown persona')
+          ? '⚠️ Pick a persona from the list.'
+          : '⚠️ The persona model is unreachable right now.');
       }
       return;
     }
@@ -207,7 +218,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 ## 🚀 Features
 
 ### \`/chat\`
-Ask the bot any question, and get an AI-generated response using OpenRouter.
+Pick a persona and they reply to the chat in their own voice (fine-tuned model + past-chat memory).
 
 ### \`/pingbomb\`
 Spam-pings a user randomly until stopped.
