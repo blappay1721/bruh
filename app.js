@@ -55,18 +55,26 @@ async function onAutocomplete(interaction) {
 // Vote buttons from /everyone
 async function onButton(interaction) {
   const state = activeVoteWindow;
-  const messageId = interaction.message.id;
+  // Revoke lives on the voter's ephemeral message, so it carries the vote card's id instead of sitting on it
+  const [action, cardId = interaction.message.id] = interaction.customId.split(':');
 
-  if (!state || !state.votingActive || state.messageId !== messageId) {
-    return interaction.reply(ephemeral('Voting has already ended or this message is not active.'));
+  if (!state || !state.votingActive || state.messageId !== cardId) {
+    const msg = 'Voting has already ended or this message is not active.';
+    return action === 'vote_revoke' ? interaction.update({ content: msg, components: [] }) : interaction.reply(ephemeral(msg));
   }
 
-  // buttons are shared by everyone, so per-user state (voted or not) is checked here, not shown
+  // the card's buttons are shared by everyone; per-user Revoke goes in a message only the voter sees
   const voted = state.voters.has(interaction.user.id);
-  if (interaction.customId === 'vote_yes') {
-    if (voted) return interaction.reply(ephemeral('You already voted.'));
+  const revokeRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`vote_revoke:${cardId}`).setLabel('Revoke vote').setStyle(ButtonStyle.Danger),
+  );
+  if (action === 'vote_yes') {
+    if (voted) return interaction.reply({ ...ephemeral('✅ You already voted yes.'), components: [revokeRow] });
     state.voters.add(interaction.user.id);
-    if (state.voters.size < state.threshold) return interaction.update(state.render('open'));
+    if (state.voters.size < state.threshold) {
+      await interaction.update(state.render('open'));
+      return interaction.followUp({ ...ephemeral('✅ You voted yes.'), components: [revokeRow] });
+    }
 
     state.votingActive = false;
     clearTimeout(state.timer);
@@ -78,17 +86,18 @@ async function onButton(interaction) {
       body: {
         content: '@everyone',
         embeds: [noticeEmbed(state.message.trim().slice(0, 4096)).setAuthor({ name: state.invoker, iconURL: state.invokerAvatar }).toJSON()],
-        message_reference: { message_id: messageId, fail_if_not_exists: false },
+        message_reference: { message_id: cardId, fail_if_not_exists: false },
         allowed_mentions: { parse: ['everyone'] },
       },
     });
     return;
   }
 
-  if (interaction.customId === 'vote_revoke') {
-    if (!voted) return interaction.reply(ephemeral("You haven't voted."));
+  if (action === 'vote_revoke') {
+    if (!voted) return interaction.update({ content: "You haven't voted.", components: [] });
     state.voters.delete(interaction.user.id);
-    return interaction.update(state.render('open'));
+    await interaction.update({ content: '↩️ Vote revoked.', components: [] });
+    return state.interaction.editReply(state.render('open'));
   }
 }
 
@@ -261,16 +270,14 @@ Simple test command.
     const endsAt = Math.floor(Date.now() / 1000) + duration;
 
     // <t:…:R> is ticked live by each Discord client, so the card is only edited when votes change
-    voteWindow.render = status => {
-      const buttons = [new ButtonBuilder().setCustomId('vote_yes').setLabel('Vote yes').setEmoji('✅').setStyle(ButtonStyle.Success)];
-      if (voteWindow.voters.size) {
-        buttons.push(new ButtonBuilder().setCustomId('vote_revoke').setLabel('Revoke vote').setStyle(ButtonStyle.Secondary));
-      }
-      return {
-        embeds: [voteEmbed({ ...voteWindow, status, endsAt })],
-        components: status === 'open' ? [new ActionRowBuilder().addComponents(buttons)] : [],
-      };
-    };
+    const voteRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('vote_yes').setLabel('Vote yes').setEmoji('✅').setStyle(ButtonStyle.Success),
+    );
+    voteWindow.interaction = interaction; // revokes edit the card through it (token lasts 15 min > max duration)
+    voteWindow.render = status => ({
+      embeds: [voteEmbed({ ...voteWindow, status, endsAt })],
+      components: status === 'open' ? [voteRow] : [],
+    });
 
     try {
       const res = await interaction.reply({ ...voteWindow.render('open'), withResponse: true });

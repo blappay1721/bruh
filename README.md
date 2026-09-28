@@ -100,7 +100,7 @@ Stops active pingbombs.
 Opens a vote window to mention `@everyone`, if enough people agree.
 
 - **Usage**: `/everyone message:<what it's about>`
-- **Behavior**: Posts a vote card with your message, a live countdown, and the list of who has voted yes. Revoke only shows once someone has voted. Once 4 users vote yes (`/config vote-threshold`), the card turns green and lists the voters, and the bot pings `@everyone` with your message. If time runs out (60s, `/config vote-duration`), the same card turns red and says the vote failed.
+- **Behavior**: Posts a vote card with your message, a live countdown, and the list of who has voted yes. After voting you get a message only you can see, with a red Revoke vote button. Once 4 users vote yes (`/config vote-threshold`), the card turns green and lists the voters, and the bot pings `@everyone` with your message. If time runs out (60s, `/config vote-duration`), the same card turns red and says the vote failed.
 - **Note**: Only one vote window can be open at a time.
 
 ---
