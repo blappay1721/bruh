@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js';
 import { client } from './client.js';
 import { DiscordRequest } from './utils.js';
 import { askCloud, cloudModel, findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar } from './utils/ai.js';
@@ -20,7 +20,10 @@ process.on('unhandledRejection', err => console.error('Unhandled rejection:', er
 
 client.once('ready', () => startSweeper(client));
 client.on('messageCreate', message => onMessage(message));
-client.on('channelDelete', channel => forget(channel.id)); // deleted by hand: stop tracking it
+client.on('channelDelete', channel => {
+  forget(channel.id); // deleted by hand: stop tracking it
+  for (const [user, bomb] of spammingUsers) if (bomb.channel?.id === channel.id) stopBomb(user);
+});
 
 client.on('interactionCreate', async interaction => {
   try {
@@ -108,6 +111,7 @@ async function onCommand(interaction) {
   // /switch and /close live inside chat channels, /config anywhere (admins); everything else in the allowed channel
   if (name === 'switch' || name === 'close') return onChatControl(interaction);
   if (name === 'config') return onConfig(interaction);
+  if (name === 'stopping') return onStopping(interaction); // also works from inside the pingbomb channel
   if (channelId !== allowedChannelId) {
     return interaction.reply(ephemeral('❌ This command can only be used in the designated channel.'));
   }
@@ -178,62 +182,49 @@ async function onCommand(interaction) {
   }
 
   if (name === 'pingbomb') {
-    const user = interaction.options.getUser('user').id;
+    const target = interaction.options.getUser('user');
+    const user = target.id;
     const initiator = interaction.user.id;
 
-    if (spammingUsers.has(user) && spammingUsers.get(user).active) {
+    if (spammingUsers.has(user)) {
       return interaction.reply(ephemeral(`<@${user}> is already being pingbombed by <@${spammingUsers.get(user).startedBy}>.`));
     }
-
-    await interaction.reply(`Starting a pingbomb on <@${user}> initiated by <@${initiator}>...`);
-    spammingUsers.set(user, { active: true, startedBy: initiator });
-
-    const spamLoop = (i = 1) => {
-      const state = spammingUsers.get(user);
-      if (!state || !state.active) return;
-
-      const delay = Math.floor(Math.random() * config.pingbombMaxDelaySec * 1000);
-      setTimeout(async () => {
-        try {
-          await DiscordRequest(`/channels/${channelId}/messages`, {
-            method: 'POST',
-            body: { content: `<@${user}> ping ${i}` },
-          });
-        } catch (error) {
-          console.error(`Failed to send ping #${i}:`, error);
-        }
-        spamLoop(i + 1);
-      }, delay);
-    };
-
-    spamLoop();
-    return;
-  }
-
-  if (name === 'stopping') {
-    const initiator = interaction.user.id;
-    const admin = isAdmin(interaction);
-    const targetUserOption = interaction.options.getUser('user')?.id;
-    let stoppedAny = false;
-
-    if (targetUserOption) {
-      const targetState = spammingUsers.get(targetUserOption);
-      if (targetState && (targetState.startedBy === initiator || initiator === targetUserOption || admin)) {
-        spammingUsers.set(targetUserOption, { ...targetState, active: false });
-        stoppedAny = true;
-      }
-    } else {
-      for (const [targetUser, state] of spammingUsers.entries()) {
-        if (state.startedBy === initiator || initiator === targetUser || admin) {
-          spammingUsers.set(targetUser, { ...state, active: false });
-          stoppedAny = true;
-        }
-      }
+    const category = await interaction.guild.channels.fetch(config.chatCategoryId).catch(() => null);
+    if (category?.type !== ChannelType.GuildCategory) {
+      return interaction.reply(ephemeral('The chat category is missing. An admin can set it with `/config chat-category`.'));
     }
 
-    return interaction.reply(stoppedAny
-      ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (admin ? 's have' : 's you started or are targeted by have')} been stopped.`
-      : `You have no permission to stop that pingbomb.`);
+    const bomb = { active: true, startedBy: initiator };
+    spammingUsers.set(user, bomb); // claimed before any await, so two /pingbomb at once can't both start
+    await interaction.deferReply();
+    try {
+      // its own channel, same visibility as the category, so anyone can watch and chat along
+      bomb.channel = await interaction.guild.channels.create({
+        name: `💣-pingbomb-${target.username}`,
+        type: ChannelType.GuildText,
+        parent: category.id,
+        topic: `Pingbomb on ${target.username} · started by ${interaction.user.username} · /stopping`,
+        permissionOverwrites: category.permissionOverwrites.cache.map(o => ({ id: o.id, type: o.type, allow: o.allow.bitfield, deny: o.deny.bitfield })),
+      });
+    } catch (err) {
+      spammingUsers.delete(user);
+      console.error('Pingbomb channel create failed:', err.message);
+      return interaction.editReply("⚠️ I couldn't create the pingbomb channel. I need **Manage Channels** in the chat category.");
+    }
+    if (!bomb.active) return bomb.channel.delete('pingbomb stopped').catch(() => {}); // /stopping raced the create
+    await interaction.editReply(`💣 Pingbombing <@${user}> (started by <@${initiator}>) in ${bomb.channel}`);
+
+    // the timer lives on the bomb so /stopping can cancel it; re-checked on fire in case it was already due
+    const tick = i => {
+      bomb.timer = setTimeout(async () => {
+        if (!bomb.active) return;
+        await bomb.channel.send({ content: `<@${user}> ping ${i}`, allowedMentions: { users: [user] } })
+          .catch(err => console.error(`Failed to send ping #${i}:`, err.message));
+        if (bomb.active) tick(i + 1);
+      }, Math.random() * config.pingbombMaxDelaySec * 1000);
+    };
+    tick(1);
+    return;
   }
 
   if (name === 'help') {
@@ -319,6 +310,29 @@ Simple test command.
   }
 
   return interaction.reply(ephemeral('Unknown command.'));
+}
+
+// cancels the pending timer (not just a flag) and deletes the channel, which also removes a ping already in flight
+function stopBomb(user) {
+  const bomb = spammingUsers.get(user);
+  if (!bomb) return;
+  spammingUsers.delete(user);
+  bomb.active = false;
+  clearTimeout(bomb.timer);
+  if (bomb.channel) setTimeout(() => bomb.channel.delete('pingbomb stopped').catch(() => {}), 5000);
+}
+
+async function onStopping(interaction) {
+  const initiator = interaction.user.id;
+  const admin = isAdmin(interaction);
+  const targetUserOption = interaction.options.getUser('user')?.id;
+  const targets = targetUserOption ? [targetUserOption] : [...spammingUsers.keys()];
+  const allowed = targets.filter(t => spammingUsers.has(t) && (spammingUsers.get(t).startedBy === initiator || initiator === t || admin));
+  allowed.forEach(stopBomb);
+
+  return interaction.reply(allowed.length
+    ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (admin ? 's have' : 's you started or are targeted by have')} been stopped. Channel closes in 5s.`
+    : `You have no permission to stop that pingbomb.`);
 }
 
 // /switch and /close: only inside a chat channel, only its creator or an admin

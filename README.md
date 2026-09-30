@@ -91,7 +91,7 @@ Spam-pings a specified user randomly until stopped.
 
 - **Usage**: `/pingbomb user: @target`
 - **Permissions**: No special permissions required to initiate.
-- **Behavior**: Sends pings at random intervals between 0–10 seconds. Only one pingbomb can target a given user at a time.
+- **Behavior**: Opens a `💣-pingbomb-<user>` channel in the chat category (same visibility as the category, anyone can chat there) and pings at random intervals up to `pingbomb-interval` seconds. Only one pingbomb can target a given user at a time. Stopping it deletes the channel after 5s.
 
 ---
 
