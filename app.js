@@ -212,7 +212,8 @@ async function onCommand(interaction) {
       return interaction.editReply("⚠️ I couldn't create the pingbomb channel. I need **Manage Channels** in the chat category.");
     }
     if (!bomb.active) return bomb.channel.delete('pingbomb stopped').catch(() => {}); // /stopping raced the create
-    await interaction.editReply(`💣 Pingbombing <@${user}> (started by <@${initiator}>) in ${bomb.channel}`);
+    // kept as a message, not the interaction: its token dies after 15 min, a bot can edit its own message forever
+    bomb.startMessage = await interaction.editReply(`💣 Pingbombing <@${user}> (started by <@${initiator}>) in ${bomb.channel}`);
 
     // the timer lives on the bomb so /stopping can cancel it; re-checked on fire in case it was already due
     const tick = i => {
@@ -313,12 +314,16 @@ Simple test command.
 }
 
 // cancels the pending timer (not just a flag) and deletes the channel, which also removes a ping already in flight
-function stopBomb(user) {
+function stopBomb(user, byId) {
   const bomb = spammingUsers.get(user);
   if (!bomb) return;
   spammingUsers.delete(user);
   bomb.active = false;
   clearTimeout(bomb.timer);
+  bomb.startMessage?.edit({
+    content: `🛑 Pingbomb on <@${user}> (started by <@${bomb.startedBy}>) was stopped${byId ? ` by <@${byId}>` : ''}.`,
+    allowedMentions: { parse: [] }, // an edit shouldn't re-ping anyone
+  }).catch(err => console.error('Pingbomb start message edit failed:', err.message));
   if (bomb.channel) setTimeout(() => bomb.channel.delete('pingbomb stopped').catch(() => {}), 5000);
 }
 
@@ -328,7 +333,7 @@ async function onStopping(interaction) {
   const targetUserOption = interaction.options.getUser('user')?.id;
   const targets = targetUserOption ? [targetUserOption] : [...spammingUsers.keys()];
   const allowed = targets.filter(t => spammingUsers.has(t) && (spammingUsers.get(t).startedBy === initiator || initiator === t || admin));
-  allowed.forEach(stopBomb);
+  allowed.forEach(t => stopBomb(t, initiator));
 
   return interaction.reply(allowed.length
     ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (admin ? 's have' : 's you started or are targeted by have')} been stopped. Channel closes in 5s.`
