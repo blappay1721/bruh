@@ -8,7 +8,7 @@ Slash commands arrive over the bot's gateway connection, so it runs anywhere wit
 
 ## 🚀 Features
 
-> ℹ️ All slash commands are restricted to the channel set by `ALLOWED_CHANNEL_ID`. Used anywhere else, the bot replies with an ephemeral error.
+> ℹ️ Slash commands are restricted to the channel set by `ALLOWED_CHANNEL_ID` (used anywhere else, the bot replies with an ephemeral error). Exceptions: `/switch` and `/close` work inside chat channels, `/stopping` and `/config` work anywhere.
 
 ### `/ai`
 A real assistant for actual questions: `gpt-oss:120b` on Ollama Cloud.
@@ -23,21 +23,22 @@ A real assistant for actual questions: `gpt-oss:120b` on Ollama Cloud.
 Someone from the group replies to the chat, in their own voice.
 
 - **Usage**: `/msg persona: <pick from the list> prompt: <what you say to them>`
-- **Response**: `> **you**: prompt` then `**persona**: reply`. The reply comes from `bruh-persona:v2` (Qwen3-1.7B fine-tuned on the group's messages) running locally in Ollama.
-- **Context**: the last ~30 channel messages are read (only the current conversation — anything before a 45-minute gap is dropped), so the persona answers what's actually being talked about. Earlier `/msg` replies count as that persona's messages, so follow-ups keep the thread.
+- **Response**: two cards — your prompt (your name + avatar, cut at 300 chars) and the persona's reply (their name, their real Discord avatar if they're in the server, and a fixed color per persona). The reply comes from `bruh-persona:v2` (Qwen3-1.7B fine-tuned on the group's messages) running locally in Ollama, capped at ~120 tokens.
+- **Context**: one-off by default — the persona only sees your prompt. Set `PERSONA_CONTEXT=1` in `.env` to also send the last 30 channel messages (only the current conversation: anything before a 45-minute gap is dropped, and the server keeps the last 8 turns). In that mode earlier `/msg` exchanges are read back from their cards, so follow-ups keep the thread.
 - **Memory (RAG)**: each reply gets 3 of the persona's own past lines (voice) and, when confidently relevant, up to 2 snippets of past conversations (facts). A persona only "remembers" DMs they were in.
-- **Pings**: when a persona writes `@name`, it pings whichever server member has that exact username, display name, or nickname (multi-word names like `@The Living Meme` work). `@everyone`, `@here`, and roles are never pinged. If names stay plain text, turn on **Server Members Intent** in the Developer Portal.
+- **Pings**: when a persona writes `@name`, it pings whichever server member has that exact username, display name, or nickname (multi-word names like `@The Living Meme` work). Pings go in the message text above the cards, since embeds can't ping. `@everyone`, `@here`, and roles are never pinged. If names stay plain text (and avatars are missing), turn on **Server Members Intent** in the Developer Portal.
 
 ---
 
 ### `/chat`
-Opens your own channel to chat with a persona — just type, and they answer as themselves (their name + avatar).
+Opens your own channel to chat with a persona — just type, and they answer.
 
 - **Usage**: `/chat persona: <pick> visibility: private|public`
-- **Private**: only you, the bot, and admins can see it. **Public**: everyone who can see the chat category can join in.
-- Replies use the recent conversation in that channel (the last 8 turns — the window the model was trained on). Several quick messages get one answer.
-- Channels are created at the bottom of the chat category, named like `💬-saintsf-bernard`.
-- One open chat per person (admins: `/config chat-limit`). Idle chats get a 1-minute warning, then are deleted after 10 minutes (`/config chat-timeout`).
+- **Private**: only you, the bot, and admins can see it. The persona posts as themselves (their name + avatar, through a webhook), and a multi-line answer arrives as separate messages, like a real burst.
+- **Public**: same visibility as the chat category, so anyone can join in. Each person gets their own answer, as a reply card to their latest message (without pinging them), in the order they wrote. Up to 5 people can be waiting at once; beyond that the oldest is dropped. Other people's unanswered messages are left out of each reply's context.
+- Replies use the recent conversation in that channel (the server keeps the last 8 turns — the window the model was trained on). Messages sent within 2 seconds of each other get one answer. Persona lines from before a `/switch` stay attributed to the earlier persona.
+- Channels are created at the bottom of the chat category, named like `💬-saintsf-bernard`, starting with an intro card.
+- One open chat per person (admins: `/config chat-limit`, 0 = no limit). Idle chats get a warning about a minute before closing, then are deleted after 10 minutes without messages (`/config chat-timeout`). Open chats are saved in `data/state.json`, so they survive restarts; channels deleted by hand are forgotten.
 
 ### `/switch`
 Inside a chat channel: talk to a different persona. `/switch persona: <pick>` — only the chat's creator or an admin.
@@ -65,12 +66,15 @@ Inside a chat channel: deletes it. Only the chat's creator or an admin.
    ```
    It listens on `127.0.0.1:8787`. If it runs on another machine, set `PERSONA_API_URL` in the bot's `.env`.
 
-Discord side:
-- **Developer Portal → Bot → Message Content Intent: ON** (otherwise channel history comes back empty and personas only see the prompt).
-- The bot needs **Read Message History** in the allowed channel.
-- Re-register commands after updating: `npm run register` (adds the `persona` option).
+The persona list (for autocomplete) is fetched from the server's `GET /personas` and cached for 10 minutes. Replies come from `POST /chat`; the bot waits up to 170s for one (CPU box).
 
-`.env`: `APP_ID`, `DISCORD_TOKEN`, `TOKEN`, `GUILD_ID`, `ALLOWED_CHANNEL_ID`, `OLLAMA_API_KEY` (for `/ai`), optional `PERSONA_API_URL` and `OLLAMA_MODEL`. `PUBLIC_KEY` is no longer used.
+Discord side:
+- **Developer Portal → Bot → Message Content Intent: ON**. `/chat` channels can't read what people type without it (and `/msg` context mode sees empty history).
+- **Server Members Intent: ON** for `@name` pings and persona avatars.
+- The bot needs **Manage Channels** and **Manage Webhooks** in the chat category, and **Read Message History** in the allowed channel when `PERSONA_CONTEXT=1`.
+- Re-register commands after updating: `npm run register`.
+
+`.env`: `APP_ID`, `TOKEN` (gateway login), `DISCORD_TOKEN` (REST calls; the same bot token), `GUILD_ID`, `ALLOWED_CHANNEL_ID`, `OLLAMA_API_KEY` (for `/ai`). Optional: `PERSONA_API_URL`, `PERSONA_CONTEXT=1`, `OLLAMA_MODEL`, `STATE_FILE` (default `data/state.json`). `PUBLIC_KEY` is no longer used.
 
 Keep the persona server running with systemd, e.g. `/etc/systemd/system/bruh-persona.service`:
 ```ini
