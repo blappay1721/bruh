@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { capitalize, InstallGuildCommands } from './utils.js';
+import { capitalize, InstallGlobalCommands } from './utils.js';
 import { CONFIG_SPEC } from './utils/store.js';
 
 const personaOption = description => ({ type: 3, name: 'persona', description, required: true, autocomplete: true });
@@ -150,7 +150,8 @@ const CONFIG_COMMAND = {
 const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, AI_COMMAND, MSG_COMMAND, HELP_COMMAND, EVERYONE_COMMAND,
   CHAT_COMMAND, SWITCH_COMMAND, CLOSE_COMMAND, CONFIG_COMMAND];
 
-InstallGuildCommands(process.env.APP_ID, process.env.GUILD_ID, ALL_COMMANDS)
+// global, not guild: DiscordSRV shares this bot's token and overwrites the guild command list on every Minecraft start
+InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS)
   .then(() => console.log("✅ Slash commands registered successfully"))
   .catch((err) => console.error("❌ Failed to register commands:", err));
 
