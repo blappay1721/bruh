@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { capitalize, InstallGlobalCommands } from './utils.js';
+import { InstallGlobalCommands } from './utils.js';
 import { CONFIG_SPEC } from './utils/store.js';
 
 const personaOption = description => ({ type: 3, name: 'persona', description, required: true, autocomplete: true });

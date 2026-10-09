@@ -44,28 +44,3 @@ export async function InstallGlobalCommands(appId, commands) {
     console.error('❌ Failed to register global commands:', err.message);
   }
 }
-
-export async function InstallGuildCommands(appId, guildId, commands) {
-  const endpoint = `applications/${appId}/guilds/${guildId}/commands`;
-
-  try {
-    const res = await DiscordRequest(endpoint, {
-      method: 'PUT',
-      body: commands,
-    });
-    console.log('✅ Registered guild commands');
-    return res;
-  } catch (err) {
-    console.error('❌ Failed to register guild commands:', err.message);
-  }
-}
-
-export function getRandomEmoji() {
-  const emojiList = ['😭','😄','😌','🤓','😎','😤','🤖','😶‍🌫️','🌏','📸','💿','👋','🌊','✨'];
-  return emojiList[Math.floor(Math.random() * emojiList.length)];
-}
-
-export function capitalize(str) {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-

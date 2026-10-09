@@ -4,9 +4,6 @@ import { DiscordRequest } from '../utils.js';
 import { isPersonaEmbed } from './look.js';
 
 const API = process.env.PERSONA_API_URL || 'http://127.0.0.1:8787';
-const HISTORY = 30; // messages sent as context; the server trims to the training window (8 turns, 45-min session)
-// /msg is one-off by default. PERSONA_CONTEXT=1 also sends recent channel chat + earlier /msg replies.
-const USE_CONTEXT = process.env.PERSONA_CONTEXT === '1';
 
 // ---------- personas ----------
 let personas = null;
@@ -43,12 +40,9 @@ export async function askPersona(persona, messages, session = undefined) {
   return data;
 }
 
-// /msg: one prompt (plus channel context when PERSONA_CONTEXT=1)
-export async function getPersonaReply(persona, prompt, { channelId, appId, invoker }) {
-  const messages = USE_CONTEXT ? restTurns(await channelHistory(channelId), appId) : [];
-  messages.push({ author: invoker, text: prompt, ts: new Date().toISOString() });
-  return askPersona(persona, messages);
-}
+// /msg: one-off prompt, no channel context
+export const getPersonaReply = (persona, prompt, invoker) =>
+  askPersona(persona, [{ author: invoker, text: prompt, ts: new Date().toISOString() }]);
 
 // ---------- /ai: general assistant on Ollama Cloud ----------
 const CLOUD_MODEL = process.env.OLLAMA_MODEL || 'gpt-oss:120b';
@@ -108,33 +102,6 @@ export function discordTurns(messages, { webhookId, persona, botId }) {
     if (text) turns.push({ author, text, ts: m.createdAt.toISOString() });
   }
   return turns;
-}
-
-// /msg context mode (raw REST messages, oldest first); earlier /msg replies are read back from their embeds
-function restTurns(messages, appId) {
-  const turns = [];
-  for (const m of messages) {
-    if (m.author?.bot) {
-      if (m.author.id !== appId) continue;
-      const [ask, answer] = m.embeds || []; // /msg = prompt card + persona reply card
-      if (ask?.author?.name && ask.description && isPersonaEmbed(answer)) {
-        turns.push({ author: ask.author.name, text: ask.description, ts: m.timestamp }, { author: answer.author.name, text: answer.description, ts: m.timestamp });
-      }
-      continue;
-    }
-    const text = messageText({ content: m.content, mentions: m.mentions, stickers: m.sticker_items?.length, attachments: m.attachments });
-    if (text) turns.push({ author: m.author.username, text, ts: m.timestamp });
-  }
-  return turns;
-}
-
-async function channelHistory(channelId) {
-  try {
-    const res = await DiscordRequest(`channels/${channelId}/messages?limit=${HISTORY}`, { method: 'GET' });
-    return (await res.json()).reverse(); // API returns newest first
-  } catch {
-    return []; // no read access (DMs / user-installed contexts): answer from the prompt alone
-  }
 }
 
 // ---------- server members: pings + avatars ----------

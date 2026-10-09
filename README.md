@@ -24,7 +24,7 @@ Someone from the group replies to the chat, in their own voice.
 
 - **Usage**: `/msg persona: <pick from the list> prompt: <what you say to them>`
 - **Response**: two cards — your prompt (your name + avatar, cut at 300 chars) and the persona's reply (their name, their real Discord avatar if they're in the server, and a fixed color per persona). The reply comes from `bruh-persona:v2` (Qwen3-1.7B fine-tuned on the group's messages) running locally in Ollama, capped at ~120 tokens.
-- **Context**: one-off by default — the persona only sees your prompt. Set `PERSONA_CONTEXT=1` in `.env` to also send the last 30 channel messages (only the current conversation: anything before a 45-minute gap is dropped, and the server keeps the last 8 turns). In that mode earlier `/msg` exchanges are read back from their cards, so follow-ups keep the thread.
+- **Context**: one-off — the persona only sees your prompt. For a back-and-forth, use `/chat`.
 - **Memory (RAG)**: each reply gets 3 of the persona's own past lines (voice) and, when confidently relevant, up to 2 snippets of past conversations (facts). A persona only "remembers" DMs they were in.
 - **Pings**: when a persona writes `@name`, it pings whichever server member has that exact username, display name, or nickname (multi-word names like `@The Living Meme` work). Pings go in the message text above the cards, since embeds can't ping. `@everyone`, `@here`, and roles are never pinged. If names stay plain text (and avatars are missing), turn on **Server Members Intent** in the Developer Portal.
 
@@ -69,12 +69,12 @@ Inside a chat channel: deletes it. Only the chat's creator or an admin.
 The persona list (for autocomplete) is fetched from the server's `GET /personas` and cached for 10 minutes. Replies come from `POST /chat`; the bot waits up to 170s for one (CPU box).
 
 Discord side:
-- **Developer Portal → Bot → Message Content Intent: ON**. `/chat` channels can't read what people type without it (and `/msg` context mode sees empty history).
+- **Developer Portal → Bot → Message Content Intent: ON**. `/chat` channels can't read what people type without it.
 - **Server Members Intent: ON** for `@name` pings and persona avatars.
-- The bot needs **Manage Channels** and **Manage Webhooks** in the chat category, and **Read Message History** in the allowed channel when `PERSONA_CONTEXT=1`.
+- The bot needs **Manage Channels** and **Manage Webhooks** in the chat category.
 - Re-register commands after updating: `npm run register`.
 
-`.env`: `APP_ID`, `TOKEN` (gateway login), `DISCORD_TOKEN` (REST calls; the same bot token), `GUILD_ID`, `ALLOWED_CHANNEL_ID`, `OLLAMA_API_KEY` (for `/ai`). Optional: `PERSONA_API_URL`, `PERSONA_CONTEXT=1`, `OLLAMA_MODEL`, `STATE_FILE` (default `data/state.json`). `PUBLIC_KEY` is no longer used.
+`.env`: `APP_ID`, `TOKEN` (gateway login), `DISCORD_TOKEN` (REST calls; the same bot token), `ALLOWED_CHANNEL_ID`, `OLLAMA_API_KEY` (for `/ai`). Optional: `PERSONA_API_URL`, `OLLAMA_MODEL`, `STATE_FILE` (default `data/state.json`).
 
 Keep the persona server running with systemd, e.g. `/etc/systemd/system/bruh-persona.service`:
 ```ini

@@ -148,7 +148,7 @@ async function onCommand(interaction) {
     try {
       const persona = await findPersona(personaValue);
       if (!persona) throw new UserError('Pick a persona from the list.');
-      const { reply } = await getPersonaReply(persona.id, prompt, { channelId, appId: process.env.APP_ID, invoker });
+      const { reply } = await getPersonaReply(persona.id, prompt, invoker);
       const { content, users } = await linkMentions(reply, interaction.guildId);
       const avatar = await personaAvatar(interaction.guildId, persona);
       await interaction.editReply({
