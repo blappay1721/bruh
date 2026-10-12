@@ -154,7 +154,10 @@ const TRANSLATE_COMMAND = {
   description: 'Translate text (only you see it). For messages: right-click → Apps → Translate',
   options: [
     { type: 3, name: 'text', description: 'What to translate', required: true, max_length: 4000 },
-    { type: 3, name: 'language', description: 'Translate into (default: your Discord language)', required: false, max_length: 50 },
+    {
+      type: 3, name: 'language', description: 'Translate into (default: your Discord language)', required: false, max_length: 50,
+      autocomplete: true,
+    },
   ],
   type: 1,
   integration_types: [0, 1],

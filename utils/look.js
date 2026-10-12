@@ -38,13 +38,14 @@ export function aiEmbeds({ reply, invoker, invokerAvatar, prompt, model }) {
   return [promptCard, ...answers];
 }
 
-// /translate: who wrote it (links back to the original message), one page of the translation, [page/N] + language in the footer
-export function translateEmbed({ author, avatar, url, text, language, model, page }) {
+// /translate: who wrote it (links back to the original message), one page of the translation,
+// footer "[page/N] · 🇪🇸 Spanish → 🇺🇸 English · model"
+export function translateEmbed({ author, avatar, url, text, languages, model, page }) {
   return new EmbedBuilder()
     .setColor(0x10a37f)
     .setAuthor({ name: author, ...(avatar && { iconURL: avatar }), ...(url && { url }) })
     .setDescription(clip(text, 4096))
-    .setFooter({ text: `${page ? `[${page}] · ` : ''}${language} · ${model}` });
+    .setFooter({ text: `${page ? `[${page}] · ` : ''}${languages} · ${model}` });
 }
 
 // long text -> pages of at most `max` chars, cut at a line break when there's one in the back half

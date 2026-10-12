@@ -52,11 +52,28 @@ export const cloudModel = CLOUD_MODEL;
 
 export const askCloud = (prompt, invoker) => cloudChat(CLOUD_SYSTEM, `${invoker}: ${prompt}`);
 
-// /translate + the "Translate" message menu
-export const translate = (text, language) => cloudChat(`Translate the user's Discord message into ${language}. `
-  + 'Output only the translation, no notes or quotes. Keep the formatting exactly: line breaks, markdown, emoji, '
-  + 'mentions like <@123> <#123> <:name:123>, URLs, and code blocks (never translate code). '
-  + `If it is already in ${language}, return it unchanged.`, text);
+// /translate + the "Translate" message menu. from: the user's correction when the detected language was wrong.
+// -> { text, source: detected language name | null, alts: other languages it could be }
+export async function translate(text, language, from) {
+  const reply = await cloudChat(`Translate the user's Discord message ${from ? `from ${from} ` : ''}into ${language}. `
+    + 'Keep the formatting exactly: line breaks, markdown, emoji, mentions like <@123> <#123> <:name:123>, URLs, '
+    + `and code blocks (never translate code). If it is already in ${language}, return it unchanged.\n`
+    + 'Reply in exactly this format: first a line <<lang:LANGUAGE|ALT1,ALT2,ALT3>>, then the translation and nothing else '
+    + '(no notes or quotes). LANGUAGE is the language the message is written in'
+    + `${from ? ` (${from})` : ''}, named in English. ALT1-ALT3 are up to three other languages it could plausibly be, `
+    + 'ones easily confused with it; leave them out if there are none.', text);
+  return parseTranslation(reply);
+}
+
+export function parseTranslation(reply) {
+  const header = reply.match(/^\s*<<lang:([^|>\n]*)\|?([^>\n]*)>>[ \t]*\n?/);
+  // ponytail: a model that skips the header gets "Unknown" as the source; tighten the prompt if that shows up a lot
+  if (!header) return { text: reply, source: null, alts: [] };
+  const out = reply.slice(header[0].length);
+  if (!out.trim()) throw new Error('empty reply from ollama cloud');
+  const alts = header[2].split(',').map(s => s.trim()).filter(Boolean).slice(0, 3);
+  return { text: out, source: header[1].trim() || null, alts };
+}
 
 // what the user sees when cloudChat fails (the full error goes to the log)
 export function cloudErrorMessage(err) {
