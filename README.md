@@ -17,7 +17,8 @@ Translations only you can see, with `/ai`'s Ollama Cloud model. Works in any ser
 - **Typed text**: `/translate text: <...> language: <optional>`.
 - Translates into your Discord app language by default. The menu under the result re-translates into another language. Formatting, mentions, links and code blocks are kept.
 - Long translations are split into pages, with ◀ ▶ buttons and `[1/N]` in the footer.
-- The language menu and page buttons work for an hour after you last touched them (then they say "expired").
+- The language menu and page buttons keep working until the bot restarts, or until 500 newer translations push the card out (least recently used first). Then they say "expired".
+- Each card's data is encrypted with a random key that lives only in that card's buttons, so the bot's memory holds nothing readable.
 - **Cache**: repeat translations skip the model. Up to 2000 are kept in memory (never on disk); the least recently used goes first, so common phrases stay. Entries are encrypted with a key derived from the original text, so the cache holds no readable text. Server messages share the cache; DMs and `/translate` text are cached per user.
 
 ### `/ai`

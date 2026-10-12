@@ -58,6 +58,19 @@ export const translate = (text, language) => cloudChat(`Translate the user's Dis
   + 'mentions like <@123> <#123> <:name:123>, URLs, and code blocks (never translate code). '
   + `If it is already in ${language}, return it unchanged.`, text);
 
+// what the user sees when cloudChat fails (the full error goes to the log)
+export function cloudErrorMessage(err) {
+  if (err.message === 'busy') return '⏳ **Rate limited**: the AI is getting too many requests right now. Try again in a minute.';
+  if (err.name === 'TimeoutError') return '⌛ The AI took too long to answer. Try again, or try something shorter.';
+  if (err.message === 'empty reply from ollama cloud') return '⚠️ The AI sent back an empty answer. Try again.';
+  if (err.status === 401 || err.status === 403 || err.message === 'OLLAMA_API_KEY is not set') {
+    return "⚠️ The bot's AI key is missing or invalid. Let the bot owner know.";
+  }
+  if (err.status >= 500) return '⚠️ Ollama Cloud is having problems right now. Try again in a few minutes.';
+  if (err.status) return `⚠️ The AI rejected the request (error ${err.status}). Try again, or let the bot owner know.`;
+  return "⚠️ Couldn't reach the AI. Try again in a bit."; // network failure
+}
+
 async function cloudChat(system, user) {
   if (!process.env.OLLAMA_API_KEY) throw new Error('OLLAMA_API_KEY is not set');
   const res = await fetch('https://ollama.com/api/chat', {
@@ -71,7 +84,9 @@ async function cloudChat(system, user) {
     signal: AbortSignal.timeout(180_000),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(res.status === 429 ? 'busy' : data.error || `ollama cloud ${res.status}`);
+  if (!res.ok) {
+    throw Object.assign(new Error(res.status === 429 ? 'busy' : data.error || `ollama cloud ${res.status}`), { status: res.status });
+  }
   const reply = data.message?.content?.trim(); // gpt-oss puts its reasoning in message.thinking, not here
   if (!reply) throw new Error('empty reply from ollama cloud');
   return reply;
