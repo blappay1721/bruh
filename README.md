@@ -8,7 +8,17 @@ Slash commands arrive over the bot's gateway connection, so it runs anywhere wit
 
 ## 🚀 Features
 
-> ℹ️ Slash commands are restricted to the channel set by `ALLOWED_CHANNEL_ID` (used anywhere else, the bot replies with an ephemeral error). Exceptions: `/switch` and `/close` work inside chat channels, `/stopping` and `/config` work anywhere.
+> ℹ️ Slash commands are restricted to the channel set by `ALLOWED_CHANNEL_ID` (used anywhere else, the bot replies with an ephemeral error). Exceptions: `/switch` and `/close` work inside chat channels, `/stopping`, `/config` and `/translate` work anywhere.
+
+### `/translate` + the **Translate** message menu
+Translations only you can see, with `/ai`'s Ollama Cloud model. Works in any server or DM where you've added the app, even without the bot.
+
+- **A message in chat**: right-click (long-press on mobile) → **Apps → Translate**.
+- **Typed text**: `/translate text: <...> language: <optional>`.
+- Translates into your Discord app language by default. The menu under the result re-translates into another language. Formatting, mentions, links and code blocks are kept.
+- Long translations are split into pages, with ◀ ▶ buttons and `[1/N]` in the footer.
+- The language menu and page buttons work for an hour after you last touched them (then they say "expired").
+- **Cache**: repeat translations skip the model. Up to 2000 are kept in memory (never on disk); the least recently used goes first, so common phrases stay. Entries are encrypted with a key derived from the original text, so the cache holds no readable text. Server messages share the cache; DMs and `/translate` text are cached per user.
 
 ### `/ai`
 A real assistant for actual questions: `gpt-oss:120b` on Ollama Cloud.

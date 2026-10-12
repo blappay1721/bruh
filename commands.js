@@ -147,8 +147,29 @@ const CONFIG_COMMAND = {
   ...GUILD_ONLY,
 };
 
+// /translate for typed text; the "Translate" message menu (right-click → Apps) for messages in chat:
+// a user-installed app can't read channel history in servers without the bot, but a message command is handed the message
+const TRANSLATE_COMMAND = {
+  name: 'translate',
+  description: 'Translate text (only you see it). For messages: right-click → Apps → Translate',
+  options: [
+    { type: 3, name: 'text', description: 'What to translate', required: true, max_length: 4000 },
+    { type: 3, name: 'language', description: 'Translate into (default: your Discord language)', required: false, max_length: 50 },
+  ],
+  type: 1,
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
+const TRANSLATE_MESSAGE_COMMAND = {
+  name: 'Translate',
+  type: 3, // MESSAGE context menu
+  integration_types: [0, 1],
+  contexts: [0, 1, 2],
+};
+
 const ALL_COMMANDS = [TEST_COMMAND, PINGBOMB_COMMAND, STOPPING_COMMAND, AI_COMMAND, MSG_COMMAND, HELP_COMMAND, EVERYONE_COMMAND,
-  CHAT_COMMAND, SWITCH_COMMAND, CLOSE_COMMAND, CONFIG_COMMAND];
+  CHAT_COMMAND, SWITCH_COMMAND, CLOSE_COMMAND, CONFIG_COMMAND, TRANSLATE_COMMAND, TRANSLATE_MESSAGE_COMMAND];
 
 // global, not guild: DiscordSRV shares this bot's token and overwrites the guild command list on every Minecraft start
 InstallGlobalCommands(process.env.APP_ID, ALL_COMMANDS)

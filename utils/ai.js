@@ -50,7 +50,15 @@ const CLOUD_SYSTEM = 'You are a helpful assistant in a Discord server. Answer ac
   + 'Use Discord markdown (bold, lists, code blocks); no tables, no LaTeX. Keep answers under ~1500 words.';
 export const cloudModel = CLOUD_MODEL;
 
-export async function askCloud(prompt, invoker) {
+export const askCloud = (prompt, invoker) => cloudChat(CLOUD_SYSTEM, `${invoker}: ${prompt}`);
+
+// /translate + the "Translate" message menu
+export const translate = (text, language) => cloudChat(`Translate the user's Discord message into ${language}. `
+  + 'Output only the translation, no notes or quotes. Keep the formatting exactly: line breaks, markdown, emoji, '
+  + 'mentions like <@123> <#123> <:name:123>, URLs, and code blocks (never translate code). '
+  + `If it is already in ${language}, return it unchanged.`, text);
+
+async function cloudChat(system, user) {
   if (!process.env.OLLAMA_API_KEY) throw new Error('OLLAMA_API_KEY is not set');
   const res = await fetch('https://ollama.com/api/chat', {
     method: 'POST',
@@ -58,7 +66,7 @@ export async function askCloud(prompt, invoker) {
     body: JSON.stringify({
       model: CLOUD_MODEL,
       stream: false,
-      messages: [{ role: 'system', content: CLOUD_SYSTEM }, { role: 'user', content: `${invoker}: ${prompt}` }],
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
     }),
     signal: AbortSignal.timeout(180_000),
   });

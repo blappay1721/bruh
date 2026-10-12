@@ -38,6 +38,28 @@ export function aiEmbeds({ reply, invoker, invokerAvatar, prompt, model }) {
   return [promptCard, ...answers];
 }
 
+// /translate: who wrote it (links back to the original message), one page of the translation, [page/N] + language in the footer
+export function translateEmbed({ author, avatar, url, text, language, model, page }) {
+  return new EmbedBuilder()
+    .setColor(0x10a37f)
+    .setAuthor({ name: author, ...(avatar && { iconURL: avatar }), ...(url && { url }) })
+    .setDescription(clip(text, 4096))
+    .setFooter({ text: `${page ? `[${page}] · ` : ''}${language} · ${model}` });
+}
+
+// long text -> pages of at most `max` chars, cut at a line break when there's one in the back half
+// ponytail: a code block can still be split across pages; re-open/close ``` at the cut if that bites
+export function splitPages(text, max = 4096) {
+  const pages = [];
+  while (text.length > max) {
+    const nl = text.lastIndexOf('\n', max);
+    const at = nl > max / 2 ? nl : max;
+    pages.push(text.slice(0, at));
+    text = text.slice(at).replace(/^\n/, '');
+  }
+  return [...pages, text];
+}
+
 // first message in a new chat channel
 export function introEmbed({ persona, avatar, ownerId, isPrivate, timeoutMin }) {
   return new EmbedBuilder()

@@ -1,9 +1,14 @@
 import 'dotenv/config';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import {
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, MessageFlags, PermissionFlagsBits, StringSelectMenuBuilder,
+} from 'discord.js';
 import { client } from './client.js';
 import { DiscordRequest } from './utils.js';
-import { askCloud, cloudModel, findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar } from './utils/ai.js';
-import { aiEmbeds, chatEmbeds, noticeEmbed, voteEmbed } from './utils/look.js';
+import {
+  askCloud, cloudModel, findPersona, getPersonas, getPersonaReply, linkMentions, personaAvatar, translate,
+} from './utils/ai.js';
+import { aiEmbeds, chatEmbeds, noticeEmbed, splitPages, translateEmbed, voteEmbed } from './utils/look.js';
 import { config, save, CONFIG_SPEC } from './utils/store.js';
 import {
   UserError, canControl, chatOf, closeChat, createChat, forget, onMessage, openChatsOf, startSweeper, switchPersona,
@@ -28,7 +33,8 @@ client.on('channelDelete', channel => {
 client.on('interactionCreate', async interaction => {
   try {
     if (interaction.isAutocomplete()) return await onAutocomplete(interaction);
-    if (interaction.isButton()) return await onButton(interaction);
+    if (interaction.isButton()) return await (interaction.customId.startsWith('tpage:') ? onTranslate : onButton)(interaction);
+    if (interaction.isMessageContextMenuCommand() || interaction.isStringSelectMenu()) return await onTranslate(interaction);
     if (interaction.isChatInputCommand()) return await onCommand(interaction);
   } catch (err) {
     console.error(`Interaction failed (${interaction.commandName || interaction.customId}):`, err);
@@ -112,6 +118,7 @@ async function onCommand(interaction) {
   if (name === 'switch' || name === 'close') return onChatControl(interaction);
   if (name === 'config') return onConfig(interaction);
   if (name === 'stopping') return onStopping(interaction); // also works from inside the pingbomb channel
+  if (name === 'translate') return onTranslate(interaction); // anywhere the app is installed
   if (channelId !== allowedChannelId) {
     return interaction.reply(ephemeral('❌ This command can only be used in the designated channel.'));
   }
@@ -245,6 +252,9 @@ Pick a persona and they reply in their own voice (fine-tuned model + past-chat m
 ### \`/chat\`
 Open your own channel to chat with a persona (private or public). \`/switch\` changes who you're talking to, \`/close\` ends it. Idle chats close after ${config.chatTimeoutMin} min.
 
+### \`/translate\`
+Translate text only you can see, into your Discord language (or \`language:\`). For a message in chat: right-click it → Apps → Translate.
+
 ### \`/pingbomb\`
 Spam-pings a user randomly until stopped.
 
@@ -338,6 +348,125 @@ async function onStopping(interaction) {
   return interaction.reply(allowed.length
     ? `Pingbomb${targetUserOption ? ` for <@${targetUserOption}>` : (admin ? 's have' : 's you started or are targeted by have')} been stopped. Channel closes in 5s.`
     : `You have no permission to stop that pingbomb.`);
+}
+
+// /translate, the "Translate" message menu, and its language picker. Ephemeral, and never reads the channel itself,
+// so it works in servers and DMs without the bot.
+const LANGUAGES = ['en', 'es', 'pt-BR', 'fr', 'de', 'it', 'nl', 'pl', 'ru', 'uk', 'tr', 'ar', 'hi', 'ja', 'ko',
+  'zh-Hans', 'zh-Hant', 'vi', 'th', 'id', 'tl', 'sv', 'el', 'he', 'ro']; // a select menu holds 25
+const languageNames = new Intl.DisplayNames(['en'], { type: 'language' });
+const languageName = code => { try { return languageNames.of(code); } catch { return code; } }; // free text ("spanish") passes through
+// Open translations: key -> { text, scope, author, avatar, url, lang, pages, at }, so the picker can re-translate and
+// ◀ ▶ can page. Holds plain text, so entries go an hour after their last use (the picker then says "expired").
+const translations = new Map();
+const OPEN_MS = 60 * 60_000;
+const openTranslation = key => {
+  const entry = translations.get(key);
+  if (!entry || Date.now() - entry.at > OPEN_MS) return null;
+  entry.at = Date.now();
+  translations.delete(key); // back of the line: the Map stays in last-used order, so sweeps stop at the first fresh one
+  translations.set(key, entry);
+  return entry;
+};
+const sweepTranslations = () => {
+  for (const [k, e] of translations) {
+    if (Date.now() - e.at <= OPEN_MS && translations.size <= 500) break;
+    translations.delete(k);
+  }
+};
+setInterval(sweepTranslations, 10 * 60_000); // so a quiet bot doesn't keep DM text around waiting for the next translation
+
+// Translation cache: (text + language) -> translation, no expiry, least recently used dropped past CACHE_MAX.
+// Encrypted with a key derived from the text itself: memory holds no original text, and an entry only opens for
+// someone who already has that exact text. Server messages are shared by everyone; DMs and typed text also mix in
+// the user's id, so nobody can tell (by an instant answer) what someone else translated.
+const CACHE_MAX = 2000;
+const cache = new Map(); // id -> { iv, data, tag }
+const inFlight = new Map(); // id -> pending translation: two people translating the same thing share one model call
+const sha = (...parts) => createHash('sha256').update(parts.join('\0')).digest();
+async function cachedTranslate(text, language, scope) {
+  const secret = sha(scope, language, text).toString('hex');
+  const id = sha('id', secret).toString('hex');
+  const key = sha('key', secret);
+  const hit = cache.get(id);
+  if (hit) {
+    cache.delete(id);
+    cache.set(id, hit); // back of the line, so phrases in constant use never reach the front
+    const d = createDecipheriv('aes-256-gcm', key, hit.iv).setAuthTag(hit.tag);
+    return Buffer.concat([d.update(hit.data), d.final()]).toString('utf8');
+  }
+  if (!inFlight.has(id)) {
+    inFlight.set(id, translate(text, language).then(out => { // failures aren't cached: the next try calls the model again
+      const iv = randomBytes(12);
+      const c = createCipheriv('aes-256-gcm', key, iv);
+      cache.set(id, { iv, data: Buffer.concat([c.update(out, 'utf8'), c.final()]), tag: c.getAuthTag() });
+      if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+      return out;
+    }).finally(() => inFlight.delete(id)));
+  }
+  return inFlight.get(id);
+}
+
+async function onTranslate(interaction) {
+  let key, lang, entry;
+  if (interaction.isButton()) { // ◀ ▶ through a long translation, no model call
+    const [, k, page] = interaction.customId.split(':');
+    const entry = openTranslation(k);
+    if (!entry?.pages) return interaction.update({ content: '⌛ This translation expired. Run it again.', components: [] });
+    return interaction.update(translationView(k, entry, Number(page)));
+  }
+  if (interaction.isStringSelectMenu()) {
+    key = interaction.customId.split(':')[1];
+    lang = interaction.values[0];
+    entry = openTranslation(key);
+    if (!entry) return interaction.update({ content: '⌛ This translation expired. Run it again.', components: [] });
+    await interaction.update({ content: `⏳ Translating to ${languageName(lang)}…`, components: [] }); // menu off until done
+  } else {
+    const m = interaction.isMessageContextMenuCommand() ? interaction.targetMessage : null;
+    const source = m
+      ? { text: m.content, author: m.author.displayName, avatar: m.author.displayAvatarURL(), url: m.url }
+      : { text: interaction.options.getString('text'), author: interaction.user.displayName, avatar: interaction.user.displayAvatarURL() };
+    if (!source.text.trim()) return interaction.reply(ephemeral('Nothing to translate: that message has no text.'));
+    source.scope = m && interaction.guildId ? 'server' : interaction.user.id; // see the cache note above
+    key = interaction.id;
+    entry = { ...source, at: Date.now() };
+    translations.set(key, entry);
+    sweepTranslations();
+    lang = (!m && interaction.options.getString('language')) || interaction.locale; // locale = the user's Discord language
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+
+  try {
+    entry.pages = splitPages(await cachedTranslate(entry.text, languageName(lang), entry.scope));
+    entry.lang = lang;
+  } catch (err) {
+    console.error('Translate error:', err.message);
+    return interaction.editReply(err.message === 'busy' ? '⏳ The AI is rate-limited right now. Try again in a minute.'
+      : '⚠️ The AI is unreachable right now.');
+  }
+  return interaction.editReply({ content: '', ...translationView(key, entry, 0), allowedMentions: { parse: [] } });
+}
+
+// one page of the translation (an embed holds 4096 chars), ◀ ▶ when there's more than one, then the language picker
+function translationView(key, { pages, lang, ...source }, page) {
+  const rows = [];
+  if (pages.length > 1) {
+    const arrow = (label, to, off) => new ButtonBuilder()
+      .setCustomId(`tpage:${key}:${to}`).setLabel(label).setStyle(ButtonStyle.Secondary).setDisabled(off);
+    rows.push(new ActionRowBuilder().addComponents(arrow('◀', page - 1, page === 0), arrow('▶', page + 1, page === pages.length - 1)));
+  }
+  const picker = new StringSelectMenuBuilder()
+    .setCustomId(`translate:${key}`)
+    .setPlaceholder('Translate to another language')
+    .addOptions(LANGUAGES.map(code => ({ label: languageName(code), value: code, default: code === lang })));
+  rows.push(new ActionRowBuilder().addComponents(picker));
+  return {
+    embeds: [translateEmbed({
+      ...source, text: pages[page], language: languageName(lang), model: cloudModel,
+      page: pages.length > 1 && `${page + 1}/${pages.length}`,
+    })],
+    components: rows,
+  };
 }
 
 // /switch and /close: only inside a chat channel, only its creator or an admin
