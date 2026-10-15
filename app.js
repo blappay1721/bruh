@@ -21,9 +21,12 @@ const allowedChannelId = process.env.ALLOWED_CHANNEL_ID;
 const spammingUsers = new Map();
 let activeVoteWindow = null;
 const ephemeral = content => ({ content, flags: MessageFlags.Ephemeral });
-const isAdmin = interaction => interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false;
+// the server ALLOWED_CHANNEL_ID is in. Other servers can add the bot for /translate, but personas and settings stay here
+// (false until the channel list loads on ready, so it fails closed)
+const inHome = interaction => interaction.guildId != null && interaction.guildId === client.channels.cache.get(allowedChannelId)?.guildId;
+const isAdmin = interaction => inHome(interaction) && (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator) ?? false);
 // a failed REST call in a timer (vote countdown, pingbomb) shouldn't take the whole bot down
-process.on('unhandledRejection', err => console.error('Unhandled rejection:', err));
+process.on('unhandledRejection', err => console.error('Unhandled rejection:', err?.code ?? err?.name, err?.message));
 
 client.once('ready', () => startSweeper(client));
 client.on('messageCreate', message => onMessage(message));
@@ -32,8 +35,30 @@ client.on('channelDelete', channel => {
   for (const [user, bomb] of spammingUsers) if (bomb.channel?.id === channel.id) stopBomb(user);
 });
 
+// Private bot: only members of the home server can use it (anywhere, e.g. Translate in DMs). Public Bot stays on in
+// the portal (off blocks user installs), so strangers can add it to their servers: that doesn't get them in.
+// Checked by asking Discord for that one member, remembered for 10 min.
+const MEMBER_MS = 10 * 60_000;
+const memberChecks = new Map(); // user id -> { ok, at }
+async function isMember(interaction) {
+  if (inHome(interaction)) return true;
+  const home = client.channels.cache.get(allowedChannelId)?.guild;
+  if (!home) return false; // not ready yet: fail closed
+  const id = interaction.user.id;
+  const hit = memberChecks.get(id);
+  if (hit && Date.now() - hit.at < MEMBER_MS) return hit.ok;
+  const ok = Boolean(await home.members.fetch({ user: id, cache: false }).catch(() => null));
+  touch(memberChecks, id, { ok, at: Date.now() });
+  trim(memberChecks, 5000);
+  return ok;
+}
+
 client.on('interactionCreate', async interaction => {
   try {
+    if (!(await isMember(interaction))) {
+      if (interaction.isAutocomplete()) return await interaction.respond([]);
+      return await interaction.reply(ephemeral('🔒 bruh is a private bot.'));
+    }
     if (interaction.isAutocomplete()) return await onAutocomplete(interaction);
     if ((interaction.isMessageComponent() || interaction.isModalSubmit()) && TRANSLATE_UI.test(interaction.customId)) {
       return await onTranslateUi(interaction);
@@ -42,7 +67,8 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isMessageContextMenuCommand()) return await startTranslation(interaction);
     if (interaction.isChatInputCommand()) return await onCommand(interaction);
   } catch (err) {
-    console.error(`Interaction failed (${interaction.commandName || interaction.customId}):`, err);
+    // log code + message only: whole errors carry request bodies (user text), and translate customIds carry card secrets
+    console.error(`Interaction failed (${interaction.commandName || interaction.customId?.split(':')[0]}):`, err.code ?? err.name, err.message);
     if (interaction.isRepliable() && !interaction.replied) {
       const msg = err instanceof UserError ? `⚠️ ${err.message}` : '⚠️ Something went wrong.';
       await (interaction.deferred ? interaction.editReply(msg) : interaction.reply(ephemeral(msg))).catch(() => {});
@@ -57,7 +83,8 @@ async function onAutocomplete(interaction) {
       name: `${withFlag(l.code)}${l.native && l.native !== l.name ? ` · ${l.native}` : ''}`.slice(0, 100), value: l.code,
     })));
   }
-  if (!['msg', 'chat', 'switch'].includes(interaction.commandName)) return interaction.respond([]);
+  // personas are real people from the home server: never list them anywhere else
+  if (!['msg', 'chat', 'switch'].includes(interaction.commandName) || !inHome(interaction)) return interaction.respond([]);
   const q = interaction.options.getFocused().toLowerCase();
   let choices = [];
   try {
@@ -129,6 +156,7 @@ async function onCommand(interaction) {
   if (name === 'config') return onConfig(interaction);
   if (name === 'stopping') return onStopping(interaction); // also works from inside the pingbomb channel
   if (name === 'translate') return startTranslation(interaction); // anywhere the app is installed
+  if (name === 'help') return onHelp(interaction); // anywhere: it carries the Terms and Privacy links
   if (channelId !== allowedChannelId) {
     return interaction.reply(ephemeral('❌ This command can only be used in the designated channel.'));
   }
@@ -244,50 +272,6 @@ async function onCommand(interaction) {
     return;
   }
 
-  if (name === 'help') {
-    const helpText = `
-**bruh** is a multifunctional Discord bot built using Node.js and discord.js.
-
----
-
-## 🚀 Features
-
-### \`/ai\`
-Ask a question and get a real answer (${cloudModel} on Ollama Cloud).
-
-### \`/msg\`
-Pick a persona and they reply in their own voice (fine-tuned model + past-chat memory).
-
-### \`/chat\`
-Open your own channel to chat with a persona (private or public). \`/switch\` changes who you're talking to, \`/close\` ends it. Idle chats close after ${config.chatTimeoutMin} min.
-
-### \`/translate\`
-Translate text only you can see, into your Discord language (or \`language:\`). For a message in chat: right-click it → Apps → Translate.
-
-### \`/pingbomb\`
-Spam-pings a user randomly until stopped.
-
-### \`/stopping\`
-Stop pingbombs you've started or are targeted by.
-
-### \`/everyone\`
-\`/everyone message:<why>\` starts a ${config.voteSeconds}s vote. If ${config.voteThreshold} people vote yes, everyone is pinged with your message.
-
-### \`/config\`
-Admins: bot settings.
-
-### \`/test\`
-Simple test command.
-
----
-[Terms of Service](<https://github.com/blappay1721/bruh/blob/main/TERMS.md>) · [Privacy Policy](<https://github.com/blappay1721/bruh/blob/main/PRIVACY.md>)
-      `;
-    const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
-    await interaction.reply(chunks[0]);
-    for (let i = 1; i < chunks.length; i++) await interaction.followUp(chunks[i]);
-    return;
-  }
-
   if (name === 'everyone') {
     if (activeVoteWindow?.votingActive) {
       return interaction.reply(ephemeral('⚠️ A vote is already in progress. Please wait for it to end.'));
@@ -333,6 +317,50 @@ Simple test command.
   }
 
   return interaction.reply(ephemeral('Unknown command.'));
+}
+
+async function onHelp(interaction) {
+  const helpText = `
+**bruh** is a multifunctional Discord bot built using Node.js and discord.js.
+
+---
+
+## 🚀 Features
+
+### \`/ai\`
+Ask a question and get a real answer (${cloudModel} on Ollama Cloud).
+
+### \`/msg\`
+Pick a persona and they reply in their own voice (fine-tuned model + past-chat memory).
+
+### \`/chat\`
+Open your own channel to chat with a persona (private or public). \`/switch\` changes who you're talking to, \`/close\` ends it. Idle chats close after ${config.chatTimeoutMin} min.
+
+### \`/translate\`
+Translate text only you can see, into your Discord language (or \`language:\`). For a message in chat: right-click it → Apps → Translate.
+
+### \`/pingbomb\`
+Spam-pings a user randomly until stopped.
+
+### \`/stopping\`
+Stop pingbombs you've started or are targeted by.
+
+### \`/everyone\`
+\`/everyone message:<why>\` starts a ${config.voteSeconds}s vote. If ${config.voteThreshold} people vote yes, everyone is pinged with your message.
+
+### \`/config\`
+Admins: bot settings.
+
+### \`/test\`
+Simple test command.
+
+---
+[Terms of Service](<https://github.com/blappay1721/bruh/blob/main/TERMS.md>) · [Privacy Policy](<https://github.com/blappay1721/bruh/blob/main/PRIVACY.md>)
+    `;
+  const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
+  await interaction.reply(chunks[0]);
+  for (let i = 1; i < chunks.length; i++) await interaction.followUp(chunks[i]);
+  return;
 }
 
 // cancels the pending timer (not just a flag) and deletes the channel, which also removes a ping already in flight
@@ -399,7 +427,7 @@ const saveCard = (key, secret, card) => {
 // Translation cache: (text + language + corrected source) -> { text, source, alts }, no expiry, least recently used
 // dropped past CACHE_MAX. A "Not Spanish?" correction is its own entry, so it never overwrites what others get.
 // Encrypted with a key derived from the text itself: memory holds no original text, and an entry only opens for
-// someone who already has that exact text. Server messages are shared by everyone; DMs and typed text also mix in
+// someone who already has that exact text. Server messages are shared within that server; DMs and typed text also mix in
 // the user's id, so nobody can tell (by an instant answer) what someone else translated.
 const CACHE_MAX = 2000;
 const cache = new Map(); // id -> sealed translation
@@ -466,7 +494,7 @@ async function startTranslation(interaction) {
     if (!found.code) return interaction.reply(ephemeral(found.error));
     lang = found.code;
   }
-  card.scope = m && interaction.guildId ? 'server' : interaction.user.id; // see the cache note above
+  card.scope = m && interaction.guildId ? interaction.guildId : interaction.user.id; // see the cache note above
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   return finishTranslation(interaction, interaction.id, randomBytes(32).toString('base64url'), card, lang, undefined);
 }
@@ -601,6 +629,7 @@ async function onChatControl(interaction) {
 }
 
 async function onConfig(interaction) {
+  if (!inHome(interaction)) return interaction.reply(ephemeral("Settings only apply to the bot's home server."));
   if (!isAdmin(interaction)) return interaction.reply(ephemeral('Admins only.'));
   const sub = interaction.options.getSubcommand();
   const show = s => (s.type === 'category' ? `<#${config[s.key]}>` : `**${config[s.key]}** ${s.unit}`);

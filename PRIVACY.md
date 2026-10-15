@@ -10,7 +10,7 @@ This policy explains what the **bruh** Discord app ("the bot") does with your in
 
 ## 1. What the bot receives
 
-Discord sends the bot information when you use one of its commands, buttons or menus:
+The bot is private: only members of the operator's server can use it. Discord sends the bot information when you use one of its commands, buttons or menus:
 
 - **Your account basics:** user ID, username, display name, avatar, and your Discord app language.
 - **Where you used it:** server and channel IDs.
@@ -18,7 +18,7 @@ Discord sends the bot information when you use one of its commands, buttons or m
 - **For Translate:** the text of the message you chose to translate.
 - **In `/chat` channels** (private server only, §3): the messages typed there. This is the only place the bot reads ordinary messages.
 
-The bot does **not** read messages anywhere else, track your activity, or see servers it isn't in. In servers where the bot hasn't been added, it only sees what Discord sends with your command, e.g. the one message you chose to translate.
+In servers where the bot is added, Discord delivers messages to it, but it discards them unless they're in a `/chat` channel, and it doesn't store them. The bot does **not** track your activity or see servers it isn't in. In servers where the bot hasn't been added, it only sees what Discord sends with your command, e.g. the one message you chose to translate.
 
 ## 2. What each feature does with it
 
@@ -48,6 +48,7 @@ The bot does **not** read messages anywhere else, track your activity, or see se
 - **Translations,** to avoid repeat work: up to 2,000 recent translations. Each is **encrypted with a key derived from the original text**, so they can't be read without already having that text. The cache never holds the original message text in readable form.
 - **Your open translation cards,** so the language menu and page buttons work: up to 500, each encrypted with a random key that exists only in that card's buttons, never in the bot.
 - **Rate-limit counters:** the times of your recent translations, linked to your user ID. Only the last 10 minutes count, and older times are dropped the next time you translate or when the bot restarts.
+- **Membership checks:** whether you're in the operator's server (yes or no, linked to your user ID), for 10 minutes, so it doesn't ask Discord on every click.
 - **Votes and pingbombs** while they're running.
 
 **Logs:** if something fails, the bot logs the type of error. It doesn't log message text, prompts or translations.
@@ -56,7 +57,7 @@ The bot keeps nothing else, and there are no backups of the above.
 
 ## 6. Privacy of translations
 
-Translations are **ephemeral**: only the person who asked can see them. The author of the original message isn't notified, nothing is posted to the channel, and nothing appears in the server's audit log. Translations of server messages may be cached and reused for anyone translating that exact message. Translations of DMs and of text you type into `/translate` are cached only for you.
+Translations are **ephemeral**: only the person who asked can see them. The author of the original message isn't notified, nothing is posted to the channel, and nothing appears in the server's audit log. Translations of server messages may be cached and reused for anyone translating that exact message in the same server. Translations of DMs and of text you type into `/translate` are cached only for you.
 
 ## 7. Sharing
 

@@ -1,4 +1,4 @@
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, Options } from 'discord.js';
 import 'dotenv/config';
 
 // Slash commands, autocomplete and buttons arrive over this gateway connection (app.js),
@@ -6,6 +6,8 @@ import 'dotenv/config';
 export const client = new Client({
   // GuildMessages + MessageContent: chat channels answer normal messages (Message Content Intent must be ON in the portal)
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+  // don't keep received messages in memory; chats.js fetches history when it needs it
+  makeCache: Options.cacheWithLimits({ ...Options.DefaultMakeCacheSettings, MessageManager: 0 }),
 });
 
 client.once('ready', () => {
