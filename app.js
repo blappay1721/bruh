@@ -278,6 +278,9 @@ Admins: bot settings.
 
 ### \`/test\`
 Simple test command.
+
+---
+[Terms of Service](<https://github.com/blappay1721/bruh/blob/main/TERMS.md>) · [Privacy Policy](<https://github.com/blappay1721/bruh/blob/main/PRIVACY.md>)
       `;
     const chunks = helpText.match(/[\s\S]{1,2000}/g) || ['No help content'];
     await interaction.reply(chunks[0]);
