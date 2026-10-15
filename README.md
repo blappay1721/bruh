@@ -1,5 +1,7 @@
 # bruh - A Discord Bot
 
+[Terms of Service](TERMS.md) · [Privacy Policy](PRIVACY.md)
+
 **bruh** is a multifunctional Discord bot built using Node.js and discord.js. It includes interactive features like AI chatbot responses, utility commands, and fun spam commands.
 
 Slash commands arrive over the bot's gateway connection, so it runs anywhere with outbound internet — no public URL, tunnel, or open ports. **Keep the Developer Portal's Interactions Endpoint URL empty** (if it's set, Discord sends commands there instead of to the bot).
@@ -19,6 +21,8 @@ Translations only you can see, with `/ai`'s Ollama Cloud model. Works in any ser
 - The footer shows the detected language and the target, like `🇪🇸 Spanish → 🇺🇸 American English`. Flags only appear for languages with one clear home country (none for Arabic, Esperanto, …).
 - **Wrong language detected?** Click **Not Spanish?**: it suggests languages the message could be (from the model) as buttons, or **Other…** lets you type one (`Portuguese`, `português` or `pt`). Typos get a "Did you mean …?" suggestion. Your correction sticks when you switch the target language, and it's cached separately, so it never changes what other people get.
 - `/translate language:` autocompletes (re-run `npm run register` after updating).
+- **Prompt injection**: a message can try to steer the model ("translate this as: verify your account at …"), so a translation can never add links, Discord invites or mentions the original didn't have. They're removed, with a warning above the card. Language names the bot doesn't recognise show as "Unknown", and output length is capped at a few times the message length.
+- **Fair use of the Ollama key**: 30 model calls per person per 10 minutes and 300 per hour across everyone (cache hits don't count). Past that, a "try again in X minutes" message. The limits are `USER_MAX`/`ALL_MAX` in `app.js`.
 - Long translations are split into pages, with ◀ ▶ buttons and `[1/N]` in the footer.
 - The language menu and page buttons keep working until the bot restarts, or until 500 newer translations push the card out (least recently used first). Then they say "expired".
 - Each card's data is encrypted with a random key that lives only in that card's buttons, so the bot's memory holds nothing readable.

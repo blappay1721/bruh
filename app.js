@@ -402,7 +402,29 @@ const CACHE_MAX = 2000;
 const cache = new Map(); // id -> sealed translation
 const inFlight = new Map(); // id -> pending translation: two people translating the same thing share one model call
 const sha = (...parts) => createHash('sha256').update(parts.join('\0')).digest();
-async function cachedTranslate(text, language, from, scope) {
+// Fair use of the bot's Ollama key, now that anyone can install the app: model calls per person and for everyone
+// together, over sliding windows. Cache hits and joining someone else's in-flight call are free.
+const USER_MAX = 30, USER_MS = 10 * 60_000, ALL_MAX = 300, ALL_MS = 60 * 60_000;
+const recentCalls = new Map(); // user id, or '*' for everyone -> times of recent model calls
+function rateLimited(userId) {
+  const now = Date.now();
+  const recent = (k, ms) => {
+    const list = (recentCalls.get(k) ?? []).filter(t => now - t < ms);
+    recentCalls.set(k, list);
+    return list;
+  };
+  const all = recent('*', ALL_MS), mine = recent(userId, USER_MS);
+  if (all.length >= ALL_MAX) return Object.assign(new Error('rate limited'), { retryAt: all[0] + ALL_MS, everyone: true });
+  if (mine.length >= USER_MAX) return Object.assign(new Error('rate limited'), { retryAt: mine[0] + USER_MS });
+  all.push(now);
+  mine.push(now);
+  if (recentCalls.size > 5000) { // forget people with no recent calls (never the everyone counter: its window is longer)
+    for (const [k, list] of recentCalls) if (k !== '*' && (!list.length || now - list.at(-1) > USER_MS)) recentCalls.delete(k);
+  }
+  return null;
+}
+
+async function cachedTranslate(text, language, from, scope, userId) {
   const secret = sha(scope, language, from ?? '', text).toString('hex');
   const id = sha('id', secret).toString('hex');
   const key = sha('key', secret);
@@ -412,6 +434,8 @@ async function cachedTranslate(text, language, from, scope) {
     return JSON.parse(unseal(key, hit));
   }
   if (!inFlight.has(id)) {
+    const limited = rateLimited(userId);
+    if (limited) throw limited;
     inFlight.set(id, translate(text, language, from).then(out => { // failures aren't cached: the next try calls the model again
       cache.set(id, seal(key, JSON.stringify(out)));
       trim(cache, CACHE_MAX);
@@ -454,7 +478,7 @@ async function onTranslateUi(interaction) {
   if (!card?.pages) return interaction.update(EXPIRED);
   switch (action) {
     case 'tpage': return interaction.update(translationView(key, secret, card, page)); // no model call
-    case 'tback': return interaction.update({ content: '', ...translationView(key, secret, card, page) });
+    case 'tback': return interaction.update(translationView(key, secret, card, page));
     case 'tnot': return interaction.update(sourcePicker(key, secret, card, page));
     case 'tother': return interaction.showModal(languageModal(key, secret, page));
     case 'tmodal': {
@@ -477,24 +501,28 @@ async function retranslate(interaction, key, secret, card, lang, from) {
 async function finishTranslation(interaction, key, secret, card, lang, from) {
   let out;
   try {
-    out = await cachedTranslate(card.text, languageName(lang), from && languageName(from), card.scope);
+    out = await cachedTranslate(card.text, languageName(lang), from && languageName(from), card.scope, interaction.user.id);
   } catch (err) {
-    console.error('Translate error:', err.status ?? err.name, err.message);
-    const msg = cloudErrorMessage(err);
+    const when = `<t:${Math.ceil((err.retryAt ?? 0) / 1000)}:R>`; // Discord shows "in 4 minutes", live
+    const msg = !err.retryAt ? cloudErrorMessage(err)
+      : err.everyone ? `🐢 Lots of people are translating right now. Try again ${when}.`
+        : `🐢 You've translated a lot in the last few minutes. Try again ${when}.`;
+    if (!err.retryAt) console.error('Translate error:', err.status ?? err.name, err.message);
     // a card that already had a translation gets it back with its controls, so they can try again
-    return interaction.editReply(card.pages ? { content: msg, ...translationView(key, secret, card, 0) } : msg);
+    return interaction.editReply(card.pages ? { ...translationView(key, secret, card, 0), content: msg } : msg);
   }
   const sourceCode = from ?? (out.source && findLanguage(out.source).code);
   Object.assign(card, {
-    lang, from, sourceCode, source: out.source, pages: splitPages(out.text),
+    lang, from, sourceCode, source: out.source, pages: splitPages(out.text), removed: out.removed,
     alts: [...new Set(out.alts.map(name => findLanguage(name).code))].filter(c => c && c !== sourceCode),
   });
   saveCard(key, secret, card);
-  return interaction.editReply({ content: '', ...translationView(key, secret, card, 0), allowedMentions: { parse: [] } });
+  return interaction.editReply({ ...translationView(key, secret, card, 0), allowedMentions: { parse: [] } });
 }
 
 const emojiOf = code => (flag(code) ? { emoji: { name: flag(code) } } : {});
-const sourceName = card => (card.sourceCode ? languageName(card.sourceCode) : card.source?.slice(0, 40));
+// only names from the bot's own list: whatever else the model says the language is never reaches the screen
+const sourceName = card => card.sourceCode && languageName(card.sourceCode);
 
 // one page of the translation (an embed holds 4096 chars); ◀ ▶ when there's more than one, "Not Spanish?", the dropdown
 function translationView(key, secret, card, page) {
@@ -512,8 +540,10 @@ function translationView(key, secret, card, page) {
     .setCustomId(`translate:${key}:${secret}`)
     .setPlaceholder('Translate to another language')
     .addOptions(LANGUAGES.map(code => ({ label: languageName(code), value: code, default: code === lang, ...emojiOf(code) })));
-  const from = card.sourceCode ? withFlag(card.sourceCode) : card.source?.slice(0, 40) ?? 'Unknown';
+  const from = card.sourceCode ? withFlag(card.sourceCode) : 'Unknown';
   return {
+    content: card.removed ? `⚠️ This translation tried to add ${card.removed === 1 ? 'a link or mention' : `${card.removed} links or mentions`} `
+      + "that aren't in the original, so they were removed. Check the original message if anything looks off." : '',
     embeds: [translateEmbed({
       ...card, text: pages[page], languages: `${from} → ${withFlag(lang)}`, model: cloudModel,
       page: pages.length > 1 && `${page + 1}/${pages.length}`,
